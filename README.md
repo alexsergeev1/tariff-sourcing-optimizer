@@ -12,7 +12,7 @@ Use **Load local buyer JSON** to replace the demo's demand and supplier inputs. 
 
 The cost ledger compares seven cost drivers for the expected year or a specific stress scenario. The full HTS search loads only the selected chapter, supports tariff-code prefixes and description search, and compares general rate text with the preceding archived release. Use `/` to focus the search.
 
-The import explorer compares origin shares across 12-, 24- or 36-month windows. **Public data updates** shows the latest source check and flags newer releases. GitHub Actions checks USITC and UN Comtrade daily. Optimization inputs stay tied to the documented snapshots.
+The import explorer compares origin shares across all available months or trailing 12-, 24-, or 36-month windows. **Public data updates** shows the latest source check and flags newer releases. GitHub Actions checks USITC and UN Comtrade daily. Optimization inputs stay tied to the documented snapshots.
 
 Run locally with `node serve.mjs` and open [the local demo](http://127.0.0.1:4177/). Run `node --test` for the ledger, budget, delay, and sensitivity tests.
 

@@ -2,6 +2,7 @@ import { validateBuyer } from "./buyer.mjs?v=2";
 import { boardMemo } from "./memo.mjs?v=1";
 
 const $ = (id) => document.getElementById(id);
+const assetVersion = new URL(import.meta.url).search;
 const quantity = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const percent = new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 });
 const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -20,6 +21,8 @@ let imports;
 let buyer;
 let buyerRead = 0;
 let pendingRun = false;
+let loadingSample = false;
+let appliedBuyerVersion = 0;
 let marketIndex;
 let marketSearch = 0;
 const chapters = new Map();
@@ -56,6 +59,7 @@ function renderHeadline(best, comparison, label) {
   $("hero-detail").textContent = launches.length ? launches.map((part) =>
     `${part.name} → ${origins[part.candidateCountry]} in Q${part.qualificationQuarter}`
   ).join(" · ") : "Adjust order shares across qualified lanes within the selected limits.";
+  $("plan-comparison").textContent = `${money(best.expectedCost)} modeled annual cost vs ${money(comparison.expectedCost)} for ${label}.`;
   $("expected-cost").textContent = money(best.expectedCost);
   $("cost-delta").textContent = difference(comparison.expectedCost - best.expectedCost, label);
   $("tail-cost").textContent = money(best.cvar95);
@@ -223,7 +227,7 @@ function codeDigits(code) {
 
 async function getChapter(chapter) {
   if (!chapters.has(chapter.code)) {
-    const response = await fetch(chapter.path);
+    const response = await fetch(chapter.path + assetVersion);
     if (!response.ok) throw new Error("Chapter download failed.");
     chapters.set(chapter.code, await response.json());
   }
@@ -245,6 +249,7 @@ async function searchMarket() {
   }
   $("market-chapter").value = chapter.code;
   $("market-status").textContent = `Searching chapter ${chapter.code}…`;
+  $("market-results").replaceChildren();
   try {
     const data = await getChapter(chapter);
     if (token !== marketSearch) return;
@@ -283,7 +288,7 @@ async function searchMarket() {
 
 async function initializeMarket() {
   try {
-    const response = await fetch("./data/hts-index.json");
+    const response = await fetch("./data/hts-index.json" + assetVersion);
     if (!response.ok) throw new Error("The full schedule index is unavailable.");
     marketIndex = await response.json();
     $("market-chapter").replaceChildren(...marketIndex.chapters.map(({ code, label }) => new Option(`${code} · ${label}`, code)));
@@ -337,7 +342,8 @@ function renderImportEvidence(family) {
   if (!imports) return;
   const rows = imports.rows.filter((row) => row.hs6 === family && Number.isFinite(row.valueUsd));
   const periods = [...new Set(rows.map((row) => row.period))].sort();
-  const latest = periods.slice(-Number($("import-window").value));
+  const reportingWindow = $("import-window").value;
+  const latest = reportingWindow === "all" ? periods : periods.slice(-Number(reportingWindow));
   if (!latest.length) {
     $("imports-status").textContent = `No retained UN Comtrade import rows for HS ${family}.`;
     $("imports-trend").replaceChildren();
@@ -365,6 +371,7 @@ function renderImportEvidence(family) {
   if (worldRows.length > 1) {
     const chart = element("div", undefined, "trade-columns");
     chart.setAttribute("aria-label", "U.S. import values from all origins by period");
+    chart.style.setProperty("--periods", worldRows.length);
     const max = Math.max(...worldRows.map((row) => row.valueUsd));
     for (const row of worldRows.toSorted((a, b) => a.period.localeCompare(b.period))) {
       const column = element("div", undefined, "trade-column");
@@ -408,9 +415,11 @@ async function loadEvidence(path, validate, receive, status, table, link) {
 }
 
 function executeStudy() {
-  if (pendingRun) return;
+  if (pendingRun || loadingSample) return;
   pendingRun = true;
+  appliedBuyerVersion = buyerRead;
   $("run-study").disabled = true;
+  $("run-sample").disabled = true;
   $("run-status").textContent = "Evaluating sourcing policies…";
   $("results").setAttribute("aria-busy", "true");
   const config = Object.fromEntries(inputs.map(([id, , key]) => [key, Number($(id).value)]));
@@ -420,6 +429,7 @@ function executeStudy() {
 function finishStudy(error) {
   pendingRun = false;
   $("run-study").disabled = false;
+  $("run-sample").disabled = false;
   $("results").setAttribute("aria-busy", "false");
   if (error) $("run-status").textContent = "Optimization failed. " + error;
 }
@@ -428,6 +438,10 @@ worker.addEventListener("message", ({ data }) => {
   finishStudy(data.error);
   if (data.error) return;
   study = data.study;
+  if (appliedBuyerVersion === buyerRead) {
+    const { name, componentCount } = study.buyer;
+    $("buyer-status").textContent = `${name} · ${componentCount} ${componentCount === 1 ? "component" : "components"} applied.`;
+  }
   const selectedScenario = $("ledger-scenario").value;
   $("ledger-scenario").replaceChildren(new Option("Probability-weighted year", "expected"),
     ...study.scenarios.map(({ id, name }) => new Option(name, id)));
@@ -446,6 +460,33 @@ worker.addEventListener("message", ({ data }) => {
   $("run-status").textContent = `${quantity.format(study.validation.feasibleTransitions)} feasible transitions checked.`;
 });
 worker.addEventListener("error", () => finishStudy("The calculation worker could not start. Reload to retry."));
+
+$("run-sample").addEventListener("click", async () => {
+  if (pendingRun || loadingSample) return;
+  const version = ++buyerRead;
+  loadingSample = true;
+  $("run-sample").disabled = true;
+  $("run-study").disabled = true;
+  $("buyer-status").textContent = "Loading sample buyer…";
+  let ready = false;
+  try {
+    const response = await fetch("./data/buyer.example.json");
+    if (!response.ok) throw new Error("The sample file is unavailable.");
+    const sample = validateBuyer(await response.json());
+    if (version === buyerRead) {
+      buyer = sample;
+      $("buyer-status").textContent = `${buyer.name} · running with current assumptions.`;
+      $("reset-buyer").disabled = false;
+      ready = true;
+    }
+  } catch (error) {
+    if (version === buyerRead) $("buyer-status").textContent = `Could not load sample buyer. ${error.message}`;
+  } finally {
+    loadingSample = false;
+    if (ready) executeStudy();
+    else finishStudy();
+  }
+});
 
 $("buyer-file").addEventListener("change", async (event) => {
   const version = ++buyerRead;
@@ -514,7 +555,7 @@ $("export-memo").addEventListener("click", () => {
 setOutputValues();
 executeStudy();
 initializeMarket();
-loadEvidence("./data/hts-snapshot.json", (data) => Array.isArray(data.releases) && data.releases.length > 0, (data) => {
+loadEvidence("./data/hts-snapshot.json" + assetVersion, (data) => Array.isArray(data.releases) && data.releases.length > 0, (data) => {
   schedule = data;
   $("hts-release").replaceChildren(...schedule.releases.map((release) => {
     const option = element("option", release.label ?? release.date);
@@ -525,7 +566,7 @@ loadEvidence("./data/hts-snapshot.json", (data) => Array.isArray(data.releases) 
   $("hts-release").disabled = false;
 },
   "evidence-status", "evidence-table", evidenceLink("USITC Harmonized Tariff Schedule", "https://hts.usitc.gov/"));
-loadEvidence("./data/imports.json?v=2", (data) => Array.isArray(data.rows) && Array.isArray(data.partners), (data) => {
+loadEvidence("./data/imports.json" + assetVersion, (data) => Array.isArray(data.rows) && Array.isArray(data.partners), (data) => {
   imports = data;
   $("import-window").disabled = false;
 },

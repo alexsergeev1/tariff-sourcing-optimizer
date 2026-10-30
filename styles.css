@@ -41,6 +41,10 @@ h1 { font-family: "DM Serif Text", Georgia, serif; font-size: clamp(2.35rem, 4.5
 .hero-decision span { color: #d7ead1; font-size: .76rem; font-weight: 750; }
 .hero-decision strong { display: block; font-size: 1.55rem; line-height: 1.13; letter-spacing: -.035em; margin: 8px 0 7px; }
 .hero .hero-decision p { color: #e0dfd3; font-size: .85rem; }
+.demo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 14px; margin-top: 13px; }
+.demo-actions .primary { width: auto; margin: 0; }
+.demo-actions a { color: var(--green); font-size: .78rem; font-weight: 700; text-underline-offset: 3px; }
+#plan-comparison:not(:empty) { margin-top: 10px; padding-top: 9px; border-top: 1px solid #61776a; font-variant-numeric: tabular-nums; }
 .workspace { display: grid; grid-template-columns: 265px minmax(0, 1fr); gap: 14px; align-items: start; }
 .surface { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .assumptions { padding: 16px; }
@@ -122,7 +126,7 @@ td:last-child { font-variant-numeric: tabular-nums; }
 #trade-evidence p { color: var(--muted); font-size: .8rem; line-height: 1.5; }
 .subheading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px; }
 .imports-trend { margin: 7px 0 12px; }
-.trade-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(16px, 1fr)); align-items: end; gap: 4px; padding: 5px 0; }
+.trade-columns { display: grid; grid-template-columns: repeat(var(--periods), minmax(0, 1fr)); align-items: end; gap: clamp(1px, .4vw, 4px); padding: 5px 0; }
 .trade-column { height: 72px; display: flex; flex-direction: column; justify-content: end; }
 .trade-column span { display: block; background: var(--green); border-radius: 3px 3px 0 0; }
 .methods p { max-width: 88ch; font-size: .83rem; line-height: 1.55; color: var(--muted); }
@@ -132,10 +136,13 @@ td:last-child { font-variant-numeric: tabular-nums; }
   .workspace { grid-template-columns: 220px minmax(0, 1fr); }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 740px) {
+  .site-bar { justify-content: space-between; }
+  .site-bar nav { display: none; }
+}
 @media (max-width: 660px) {
   main { padding-inline: 12px; }
   .site-bar { padding-inline: 12px; gap: 7px; justify-content: space-between; }
-  .site-bar nav { display: none; }
   .header-actions { justify-content: end; }
   .brand { font-size: .84rem; white-space: normal; }
   .button { font-size: .74rem; }

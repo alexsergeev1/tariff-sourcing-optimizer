@@ -1,19 +1,19 @@
 {
-  "checkedAt": "2026-11-11T01:18:45.814Z",
+  "checkedAt": "2026-11-11T01:28:59.653Z",
   "sources": [
     {
       "name": "USITC Harmonized Tariff Schedule",
       "url": "https://www.usitc.gov/harmonized_tariff_information/hts/archive/list",
-      "snapshot": "2026 Revision 22",
+      "snapshot": "2026 Revision 23",
       "latest": "2026 HTS Revision 23",
-      "status": "newer"
+      "status": "current"
     },
     {
       "name": "UN Comtrade U.S. monthly imports",
       "url": "https://comtradeplus.un.org/DataAvailability",
-      "snapshot": "2025-12",
+      "snapshot": "2026-08",
       "latest": "2026-08",
-      "status": "newer"
+      "status": "current"
     }
   ]
 }
