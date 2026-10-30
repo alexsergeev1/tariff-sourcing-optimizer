@@ -2,6 +2,10 @@
 
 A four-quarter capital planning tool for a representative industrial buyer. It selects order shares, supplier qualifications, and start quarters across ten component families under shared engineering and cash limits. See the [live decision model](https://alexsergeev1.github.io/tariff-sourcing-optimizer/).
 
+Search a public company by name or ticker to inspect its SEC industry classification, dated financial facts and filings. Company financials provide context for an estimated spending scope. Enter your own annual budget to model a company outside the retained financial coverage. Then set imported share, assumed unit costs, origins and qualification costs and run the sourcing case. Every exported case records the selected company, reported figures, source filings and user assumptions.
+
+The searchable directory covers SEC-listed tickers. Retained financial coverage is smaller and is identified for each company. The sample basket is an industrial planning example. Actual products, quantities, prices and supplier terms can be supplied through the buyer JSON upload.
+
 ## Try it
 
 1. Set the tariff shock, qualification budget, working capital, and adverse-regime weight, then run the optimization.

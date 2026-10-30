@@ -1,0 +1,64 @@
+name: Refresh public company data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 11 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ingest-companies.mjs
+      - data/companies-index.json
+      - data/companies/**
+      - .github/workflows/company-data.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: company-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Refresh and publish company snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh auth setup-git
+          company_checkout="$(mktemp -d)"
+          git -C "$company_checkout" init --initial-branch=bootstrap
+          git -C "$company_checkout" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          if git -C "$company_checkout" ls-remote --exit-code --heads origin refs/heads/company-data >/dev/null; then
+            git -C "$company_checkout" fetch --depth=1 origin refs/heads/company-data:refs/remotes/origin/company-data
+            git -C "$company_checkout" switch --create company-data --track origin/company-data
+          else
+            result=$?
+            if [ "$result" -ne 2 ]; then
+              exit "$result"
+            fi
+            git -C "$company_checkout" switch --orphan company-data
+            mkdir -p "$company_checkout/data"
+            cp data/companies-index.json "$company_checkout/data/"
+            cp -R data/companies "$company_checkout/data/"
+          fi
+          node ingest-companies.mjs --output "$company_checkout/data"
+          git -C "$company_checkout" add -- data/companies-index.json data/companies
+          if git -C "$company_checkout" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$company_checkout" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Refresh public company financial snapshots"
+          git -C "$company_checkout" push origin HEAD:refs/heads/company-data

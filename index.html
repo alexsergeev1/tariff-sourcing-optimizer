@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Evaluate a four-quarter sourcing plan under tariffs, supply disruption, and shared capital constraints.">
   <title>Tariff Sourcing Optimizer</title>
-  <link rel="stylesheet" href="./styles.css?v=3">
+  <link rel="stylesheet" href="./styles.css?v=4">
 </head>
 <body>
   <header class="site-bar">
@@ -30,6 +30,45 @@
         <strong id="hero-plan">—</strong>
         <p id="hero-detail">Running the default scenario.</p>
         <p id="plan-comparison"></p>
+      </div>
+    </section>
+
+    <section class="surface section company-workspace" id="company-workspace" aria-labelledby="company-title">
+      <div class="section-heading"><div><p class="eyebrow">Company decision workflow</p><h2 id="company-title">Turn a public filing into a planning case</h2></div><span class="company-badge">Reported facts + your assumptions</span></div>
+      <p class="help">Find a company, review its reported totals, then define the sourcing exposure you want to test with an estimated industrial basket.</p>
+      <p class="help" id="company-coverage"></p>
+      <div class="company-layout">
+        <div class="company-evidence">
+          <form id="company-search" class="company-search">
+            <label for="company-query">1. Find a public company by ticker or name</label>
+            <div><input id="company-query" type="search" placeholder="CAT, Apple, Ford…" maxlength="80" autocomplete="off"><button class="button secondary" type="submit">Find company</button></div>
+          </form>
+          <p class="status" id="company-search-status" role="status">Loading the company directory…</p>
+          <div id="company-matches" class="company-matches" aria-label="Matching companies"></div>
+          <h3 id="company-name">Choose a company</h3>
+          <p class="help" id="company-profile">Public financial evidence appears here before you build a case.</p>
+          <div id="company-facts" class="company-facts"></div>
+          <div id="company-filings" class="company-filings"></div>
+        </div>
+        <form id="company-case-form" class="company-case-form">
+          <h3>2. Define your estimated sourcing exposure</h3>
+          <p class="help" id="company-basis">Select a company with a retained annual revenue or cost-of-revenue value.</p>
+          <fieldset id="company-case-inputs" disabled>
+            <div class="case-fields">
+              <label class="manual-budget" for="company-budget">Own annual planning budget ($M, optional)<input id="company-budget" type="number" min="0.001" max="1000000" step="0.001" placeholder="e.g. 25"><small>Replaces the reported-total scope below. Imported share still applies.</small></label>
+              <label for="company-scope">Company total in scope (%)<input id="company-scope" type="number" min="0.001" max="100" step="0.001" value="0.1" required></label>
+              <label for="company-import-share">Imported share of scope (%)<input id="company-import-share" type="number" min="0.1" max="100" step="0.1" value="50" required></label>
+              <label for="company-unit-cost">Assumed average goods unit cost ($)<input id="company-unit-cost" type="number" min="1" max="50000" step="0.01" value="75" required></label>
+              <label for="company-qualification">Qualification per new supplier ($)<input id="company-qualification" type="number" min="0" max="10000000" step="1000" value="200000" required></label>
+              <label for="company-primary">Assumed incumbent origin<select id="company-primary"><option value="CN">China</option><option value="VN">Vietnam</option><option value="KR">South Korea</option><option value="TW">Taiwan</option><option value="MX">Mexico</option><option value="US">United States</option></select></label>
+              <label for="company-candidate">Assumed prospective origin<select id="company-candidate"><option value="MX">Mexico</option><option value="US">United States</option><option value="VN">Vietnam</option><option value="KR">South Korea</option><option value="TW">Taiwan</option><option value="CN">China</option></select></label>
+            </div>
+            <p class="case-envelope" id="company-envelope">Estimated annual goods envelope: —</p>
+            <button class="button primary" id="apply-company-case" type="submit">3. Build case and run optimization</button>
+          </fieldset>
+          <p class="status" id="company-case-status" role="status">The current results use the demo buyer until you run a company case.</p>
+          <p class="help">Any directory company can use your own planning budget. Estimated routes retain the sample basket’s capacity, ramp and seasonal patterns. Duty rates are modeled lane assumptions. Replace them with a local buyer JSON when you have verified contracts and product data.</p>
+        </form>
       </div>
     </section>
 
@@ -146,7 +185,7 @@
       <p>Both baselines use the same capacity, budget, and recourse rules. The cheapest static plan chooses against unchanged assumed tariffs and normal demand, then gets scored under the same six scenarios as the recommended plan.</p>
     </section>
   </main>
-  <script type="module" src="./app.mjs?v=3"></script>
+  <script type="module" src="./app.mjs?v=4"></script>
   <script type="module" src="./source-status.mjs?v=1"></script>
 </body>
 </html>

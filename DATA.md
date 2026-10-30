@@ -1,5 +1,9 @@
 # Data provenance
 
+Company lookup uses the SEC ticker/exchange directory, Submissions API and Company Facts API. `data/companies-index.json` describes directory and snapshot coverage. Each retained company file preserves its CIK, metric taxonomy and concept, currency, period, filing date, accession and filing URL. Only filings available by the snapshot's stated date are selected. Instant balances, annual flows and quarterly flows retain their distinct periods. Missing concepts stay missing. A superseded cost tag can be older than the latest revenue, so the company case uses current annual revenue when the cost period trails it by over 120 days.
+
+`node ingest-companies.mjs` refreshes public company data, and `--capture <directory>` imports official SEC JSON captured through the browser. The daily company workflow publishes to `company-data` for both demos. It retains prior financials and marks the source status when SEC access fails. Company research uses those public snapshots, and every decision case records separately the assumptions entered by its user. Company totals establish a scale reference. The representative basket and resulting savings remain modeled.
+
 Run `node ingest.mjs --hts-only` to rebuild the tariff archive. Run `node ingest.mjs --trade-only --full-history --resume` to extend a trade snapshot or skip complete months already in it. Omit `--resume` to redownload the full period. The script uses Node.js 22+ and requires no API key. Downloads from the rate-limited Comtrade preview API run sequentially. A resumed download saves each new month after checking the reporting dimensions, unique product and partner keys, and all ten world totals.
 
 | Dataset | Source and transformation |

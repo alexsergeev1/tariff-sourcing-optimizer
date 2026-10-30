@@ -1,5 +1,7 @@
 import { validateBuyer } from "./buyer.mjs?v=2";
 import { boardMemo } from "./memo.mjs?v=1";
+import { reportedCompanyFact, buildCompanyBuyer, companyCostBasis } from "./company.mjs?v=1";
+import { loadCompanyIndex, loadCompanySnapshot } from "./company-source.mjs?v=1";
 
 const $ = (id) => document.getElementById(id);
 const assetVersion = new URL(import.meta.url).search;
@@ -23,6 +25,14 @@ let buyerRead = 0;
 let pendingRun = false;
 let loadingSample = false;
 let appliedBuyerVersion = 0;
+let companyIndex;
+let companySnapshot;
+let companySelection = 0;
+let companyAbort;
+let pendingCompanyCase;
+let runCompanyCase;
+let appliedCompanyCase;
+let companyDraftChanged = false;
 let marketIndex;
 let marketSearch = 0;
 const chapters = new Map();
@@ -43,6 +53,194 @@ function element(tag, value, className) {
   if (className) node.className = className;
   return node;
 }
+
+function publicLink(label, address) {
+  try {
+    const url = new URL(address);
+    if (url.protocol !== "https:") throw new Error("Unsupported source URL");
+    const link = element("a", label);
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    return link;
+  } catch {
+    return element("span", label + " (link unavailable)");
+  }
+}
+
+function companyAssumptions() {
+  const ownBudget = $("company-budget").value.trim();
+  return {
+    scopePercent: Number($("company-scope").value), importSharePercent: Number($("company-import-share").value),
+    averageUnitCost: Number($("company-unit-cost").value), qualificationCost: Number($("company-qualification").value),
+    primaryCountry: $("company-primary").value, candidateCountry: $("company-candidate").value,
+    annualPlanningBudget: ownBudget === "" ? null : Number(ownBudget) * 1000000,
+  };
+}
+
+function updateCompanyControls() {
+  const busy = !companySnapshot?.profile?.ticker || pendingRun || loadingSample;
+  const ownBudget = companyAssumptions().annualPlanningBudget;
+  $("company-case-inputs").disabled = busy;
+  $("apply-company-case").disabled = busy || (!companyCostBasis(companySnapshot) && !(Number.isFinite(ownBudget) && ownBudget > 0));
+  $("company-scope").disabled = ownBudget !== null || !companyCostBasis(companySnapshot);
+}
+
+function renderCompanyCaseStatus(message) {
+  const status = $("company-case-status");
+  status.replaceChildren(element("span", message ?? (appliedCompanyCase
+    ? `Current results: ${appliedCompanyCase.ticker} estimated sourcing case. ${companyDraftChanged ? "Company or assumptions changed; build a case to update results." : appliedCompanyCase.basis.kind === "user-entered" ? "Your entered budget anchors the estimated basket." : "Reported company totals anchor the estimated basket."}`
+    : "The current results use the demo or uploaded buyer. Build a company case to apply these estimates.")));
+  if (appliedCompanyCase) {
+    const link = element("a", "See the recommended orders →", "case-result-link");
+    link.href = "#allocation";
+    status.append(element("br"), link);
+  }
+}
+
+function previewCompanyEnvelope() {
+  const basis = companyCostBasis(companySnapshot);
+  const assumptions = companyAssumptions();
+  const spend = (assumptions.annualPlanningBudget ?? basis?.value * assumptions.scopePercent / 100) * assumptions.importSharePercent / 100;
+  $("company-envelope").textContent = `Estimated annual goods envelope: ${Number.isFinite(spend) && spend > 0 ? money(spend) : "—"}`;
+  $("company-basis").textContent = assumptions.annualPlanningBudget !== null
+    ? `User-entered spend basis: ${Number.isFinite(assumptions.annualPlanningBudget) ? money(assumptions.annualPlanningBudget) : "—"} annual planning budget. The company-total scope percentage is not applied. Imported share defines the goods envelope; no public company financial value is inferred.`
+    : basis ? `${basis.id === "costOfRevenue" ? "Reported-cost" : "Revenue"}-anchored planning envelope: ${money(basis.value)} reported annual ${(basis.label ?? basis.id).toLowerCase()}, period ending ${basis.end}. ${basis.selectionReason} This is a company-wide total; the percentages below are your estimates.`
+      : "No retained annual revenue or cost-of-revenue anchor is available. Enter your own annual planning budget to build a case for this company.";
+}
+
+function renderCompanyMatches() {
+  if (!companyIndex) return;
+  const query = $("company-query").value.trim().toLowerCase();
+  const matches = companyIndex.companies.filter((entry) => !query || entry.ticker.toLowerCase().includes(query) || entry.name.toLowerCase().includes(query));
+  matches.sort((left, right) => Number(right.ticker.toLowerCase() === query) - Number(left.ticker.toLowerCase() === query) || Number(right.hasSnapshot) - Number(left.hasSnapshot) || left.ticker.localeCompare(right.ticker));
+  const shown = matches.slice(0, 8);
+  $("company-matches").replaceChildren(...shown.map((entry) => {
+    const button = element("button");
+    button.type = "button";
+    button.dataset.ticker = entry.ticker;
+    button.append(element("span", `${entry.ticker} · ${entry.name}`), element("small", entry.hasFinancials === false && entry.hasSnapshot ? "Profile + filings" : entry.hasSnapshot ? "Financial snapshot" : "SEC directory"));
+    button.addEventListener("click", () => selectCompany(entry));
+    return button;
+  }));
+  $("company-search-status").textContent = `${quantity.format(matches.length)} matching companies${matches.length > 8 ? "; showing eight. Refine the ticker or name." : "."} ${companyIndex.delivery === "online" ? "Online" : "Bundled"} SEC directory.`;
+}
+
+async function selectCompany(entry) {
+  const version = ++companySelection;
+  companyAbort?.abort();
+  companyAbort = new AbortController();
+  companySnapshot = { schemaVersion: 1, asOf: companyIndex?.asOf, retrievedAt: companyIndex?.retrievedAt,
+    profile: { ticker: entry.ticker, name: entry.name, cik: entry.cik, tickers: [entry.ticker] },
+    facts: [], coverage: "directory-only" };
+  companyDraftChanged = true;
+  $("company-query").value = entry.ticker;
+  $("company-matches").replaceChildren();
+  $("company-search-status").textContent = `Selected ${entry.ticker} · ${entry.hasSnapshot ? "financial snapshot available" : "SEC directory only"}. Search again to change company.`;
+  $("company-name").textContent = `${entry.ticker} · ${entry.name}`;
+  $("company-profile").textContent = entry.hasSnapshot ? "Loading reported financial evidence…" : "This SEC directory company has no financial snapshot in the current coverage. No financial values have been inferred.";
+  $("company-facts").replaceChildren();
+  $("company-filings").replaceChildren(publicLink("Open company filings on SEC EDGAR ↗", `https://www.sec.gov/edgar/browse/?CIK=${encodeURIComponent(entry.cik)}&owner=exclude`));
+  $("company-basis").textContent = "Select a company with a retained annual revenue or cost-of-revenue value.";
+  updateCompanyControls();
+  previewCompanyEnvelope();
+  renderCompanyCaseStatus();
+  if (!entry.hasSnapshot) return;
+  try {
+    const snapshot = await loadCompanySnapshot(entry, { signal: companyAbort.signal });
+    if (version !== companySelection) return;
+    companySnapshot = snapshot;
+    const profile = snapshot.profile;
+    $("company-name").textContent = `${entry.ticker} · ${profile.name}`;
+    const retainedFacts = snapshot.facts.length;
+    $("company-search-status").textContent = `Selected ${entry.ticker} · ${retainedFacts ? `${retainedFacts} retained financial metrics` : "profile and filings only; financial facts are not yet retained"}. Search again to change company.`;
+    $("company-profile").textContent = `${profile.sicDescription ?? "SEC issuer"} · ${snapshot.delivery === "online" ? "Online" : "Bundled"} snapshot retrieved ${(snapshot.retrievedAt ?? snapshot.asOf ?? "date unavailable").slice(0, 10)}. ${retainedFacts ? "Each value retains its reporting period." : "No financial values are available in this snapshot. The filing links remain available."}`;
+    if (snapshot.status === "stale" || snapshot.status === "partial") {
+      $("company-profile").textContent += " The latest refresh was incomplete. Retained figures keep their original source dates.";
+    }
+    const facts = ["revenue", "costOfRevenue", "inventory", "operatingIncome"].map((id) => reportedCompanyFact(snapshot, id)).filter(Boolean);
+    $("company-facts").replaceChildren(...facts.map((fact) => {
+      const card = element("article");
+      card.append(element("span", fact.label ?? fact.id), element("strong", money(fact.value)), element("small", fact.start ? `Annual period ${fact.start} to ${fact.end}` : `Balance at ${fact.end}`), publicLink(`Reported ${fact.filed ?? "date unavailable"} ↗`, fact.url));
+      return card;
+    }));
+    const filing = snapshot.latestFiling;
+    const filings = [];
+    if (filing?.url) {
+      const line = element("p");
+      line.append(publicLink(`Most recent filing: ${filing.form} · ${filing.filed} ↗`, filing.url), element("br"), element("span", `Reporting period ${filing.periodEnd ?? "unavailable"}`));
+      filings.push(line);
+    }
+    const sources = element("p");
+    sources.append(publicLink("SEC company facts ↗", snapshot.sources?.companyFacts), element("span", " · "), publicLink("SEC submissions ↗", snapshot.sources?.submissions));
+    filings.push(sources);
+    $("company-filings").replaceChildren(...filings);
+    updateCompanyControls();
+    previewCompanyEnvelope();
+  } catch (error) {
+    if (version === companySelection) $("company-profile").textContent = `Could not load financial evidence. ${error.message}`;
+  }
+}
+
+async function initializeCompanies() {
+  try {
+    companyIndex = await loadCompanyIndex();
+    const financialCount = companyIndex.companies.filter(({ hasFinancials }) => hasFinancials).length;
+    $("company-coverage").textContent = `${quantity.format(companyIndex.companies.length)} searchable tickers · ${companyIndex.snapshotCount ?? 0} company profiles · ${financialCount} with retained financials. Every company can use your own planning budget.`;
+    renderCompanyMatches();
+    const example = companyIndex.companies.find((entry) => entry.ticker === "CAT" && entry.hasSnapshot) ?? companyIndex.companies.find((entry) => entry.hasSnapshot);
+    if (example && !$("company-query").value.trim()) await selectCompany(example);
+  } catch (error) {
+    $("company-search-status").textContent = `Company directory unavailable. ${error.message} The buyer model and trade evidence remain usable.`;
+  }
+}
+
+$("company-query").addEventListener("input", renderCompanyMatches);
+$("company-search").addEventListener("submit", (event) => {
+  event.preventDefault();
+  renderCompanyMatches();
+  const query = $("company-query").value.trim().toUpperCase();
+  const exact = companyIndex?.companies.find((entry) => entry.ticker === query);
+  if (exact) selectCompany(exact);
+});
+$("company-case-form").addEventListener("input", () => {
+  companyDraftChanged = true;
+  updateCompanyControls();
+  previewCompanyEnvelope();
+  renderCompanyCaseStatus();
+});
+$("company-case-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (pendingRun || loadingSample || !companySnapshot) return;
+  const selected = companySelection;
+  const snapshot = companySnapshot;
+  const assumptions = companyAssumptions();
+  loadingSample = true;
+  $("run-study").disabled = true;
+  $("run-sample").disabled = true;
+  updateCompanyControls();
+  renderCompanyCaseStatus("Building the estimated planning case…");
+  let ready = false;
+  try {
+    const response = await fetch("./data/buyer.example.json" + assetVersion);
+    if (!response.ok) throw new Error("The representative buyer template is unavailable.");
+    const result = buildCompanyBuyer(snapshot, assumptions, await response.json());
+    if (selected !== companySelection) return;
+    buyerRead++;
+    buyer = result.buyer;
+    pendingCompanyCase = result.companyCase;
+    companyDraftChanged = false;
+    $("buyer-status").textContent = `${buyer.name} · running estimated case.`;
+    $("reset-buyer").disabled = false;
+    ready = true;
+  } catch (error) {
+    if (selected === companySelection) renderCompanyCaseStatus(`Case rejected. ${error.message}`);
+  } finally {
+    loadingSample = false;
+    if (ready) executeStudy();
+    else finishStudy();
+  }
+});
 
 function difference(value, baselineLabel) {
   if (Math.abs(value) < 1) return `Matches ${baselineLabel}`;
@@ -418,10 +616,12 @@ function executeStudy() {
   if (pendingRun || loadingSample) return;
   pendingRun = true;
   appliedBuyerVersion = buyerRead;
+  runCompanyCase = pendingCompanyCase ? structuredClone(pendingCompanyCase) : undefined;
   $("run-study").disabled = true;
   $("run-sample").disabled = true;
   $("run-status").textContent = "Evaluating sourcing policies…";
   $("results").setAttribute("aria-busy", "true");
+  updateCompanyControls();
   const config = Object.fromEntries(inputs.map(([id, , key]) => [key, Number($(id).value)]));
   worker.postMessage({ ...config, buyer });
 }
@@ -431,6 +631,7 @@ function finishStudy(error) {
   $("run-study").disabled = false;
   $("run-sample").disabled = false;
   $("results").setAttribute("aria-busy", "false");
+  updateCompanyControls();
   if (error) $("run-status").textContent = "Optimization failed. " + error;
 }
 
@@ -438,6 +639,8 @@ worker.addEventListener("message", ({ data }) => {
   finishStudy(data.error);
   if (data.error) return;
   study = data.study;
+  appliedCompanyCase = runCompanyCase;
+  renderCompanyCaseStatus();
   if (appliedBuyerVersion === buyerRead) {
     const { name, componentCount } = study.buyer;
     $("buyer-status").textContent = `${name} · ${componentCount} ${componentCount === 1 ? "component" : "components"} applied.`;
@@ -475,6 +678,7 @@ $("run-sample").addEventListener("click", async () => {
     const sample = validateBuyer(await response.json());
     if (version === buyerRead) {
       buyer = sample;
+      pendingCompanyCase = undefined;
       $("buyer-status").textContent = `${buyer.name} · running with current assumptions.`;
       $("reset-buyer").disabled = false;
       ready = true;
@@ -497,6 +701,7 @@ $("buyer-file").addEventListener("change", async (event) => {
     const verified = validateBuyer(JSON.parse(await file.text()));
     if (version !== buyerRead) return;
     buyer = verified;
+    pendingCompanyCase = undefined;
     $("buyer-status").textContent = `${buyer.name} · ${buyer.components.length} components. Run optimization to apply.`;
     $("reset-buyer").disabled = false;
   } catch (error) {
@@ -509,6 +714,7 @@ $("buyer-file").addEventListener("change", async (event) => {
 $("reset-buyer").addEventListener("click", () => {
   buyerRead++;
   buyer = undefined;
+  pendingCompanyCase = undefined;
   $("buyer-file").value = "";
   $("buyer-status").textContent = "Representative industrial buyer. Run optimization to apply.";
   $("reset-buyer").disabled = true;
@@ -544,17 +750,29 @@ $("export-audit").addEventListener("click", () => {
     schemaVersion: 1, exportedAt: new Date().toISOString(),
     selectedBaseline: $("baseline").value, selectedQuarter: Number($("quarter").value),
     evidence: { tariffSchedule: schedule?.source ?? null, tariffRows: schedule?.observations ?? null, importSource: imports?.source ?? null, importRows: imports?.observations ?? null },
+    companyCase: appliedCompanyCase ?? null,
     ...study,
   };
   downloadFile(JSON.stringify(audit, null, 2) + "\n", "application/json", "tariff-sourcing-audit.json");
 });
 $("export-memo").addEventListener("click", () => {
-  if (study) downloadFile(boardMemo(study, $("baseline").value), "text/markdown", "sourcing-decision-memo.md");
+  if (!study) return;
+  let memo = boardMemo(study, $("baseline").value);
+  if (appliedCompanyCase) {
+    const { ticker, basis, assumptions, normalizedGoodsSpend, limitations } = appliedCompanyCase;
+    const manual = basis.kind === "user-entered";
+    const anchor = manual
+      ? `${ticker}: the user-entered annual planning budget of ${dollars.format(basis.value)} anchors this case. No reported company financial total is used; the company-total scope percentage is not applied.`
+      : `${ticker}: the reported annual ${basis.label ?? basis.id} of ${dollars.format(basis.value)} for the period ending ${basis.end} anchors an estimated sourcing envelope. ${basis.selectionReason ?? ""}\n\nSource: ${basis.url}`;
+    memo += `\n## Company planning case\n\n${anchor}\n\nAnalyst assumptions: ${manual ? "" : `${assumptions.scopePercent}% of the company total in scope, `}${assumptions.importSharePercent}% imported share, ${dollars.format(assumptions.averageUnitCost)} average goods unit cost, ${dollars.format(assumptions.qualificationCost)} qualification per prospective supplier, ${assumptions.primaryCountry} incumbent origin and ${assumptions.candidateCountry} prospective origin. The normalized representative basket contains ${dollars.format(normalizedGoodsSpend)} of annual goods at incumbent prices.\n\n${limitations.join("\n\n")}\n`;
+  }
+  downloadFile(memo, "text/markdown", "sourcing-decision-memo.md");
 });
 
 setOutputValues();
 executeStudy();
 initializeMarket();
+initializeCompanies();
 loadEvidence("./data/hts-snapshot.json" + assetVersion, (data) => Array.isArray(data.releases) && data.releases.length > 0, (data) => {
   schedule = data;
   $("hts-release").replaceChildren(...schedule.releases.map((release) => {

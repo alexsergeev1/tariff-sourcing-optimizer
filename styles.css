@@ -46,6 +46,37 @@ h1 { font-family: "DM Serif Text", Georgia, serif; font-size: clamp(2.35rem, 4.5
 .demo-actions a { color: var(--green); font-size: .78rem; font-weight: 700; text-underline-offset: 3px; }
 #plan-comparison:not(:empty) { margin-top: 10px; padding-top: 9px; border-top: 1px solid #61776a; font-variant-numeric: tabular-nums; }
 .workspace { display: grid; grid-template-columns: 265px minmax(0, 1fr); gap: 14px; align-items: start; }
+.company-workspace { margin-bottom: 15px; }
+.company-badge { color: var(--green); background: #e8efe1; padding: 5px 8px; border-radius: 4px; font-size: .7rem; font-weight: 700; }
+.company-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; margin-top: 15px; }
+.company-evidence { min-width: 0; overflow-wrap: anywhere; }
+.company-layout h3 { margin: 11px 0 5px; font-size: 1rem; }
+.company-search label, .case-fields label { display: block; color: var(--muted); font-size: .76rem; font-weight: 650; line-height: 1.4; }
+.company-search > div { display: flex; gap: 6px; margin-top: 5px; }
+.company-search input { flex: 1; min-width: 0; }
+.company-layout input { border: 1px solid var(--line); border-radius: 4px; background: #fffdf8; color: var(--ink); padding: 7px 8px; }
+.company-matches { display: grid; gap: 4px; margin: 6px 0; max-height: 210px; overflow-y: auto; }
+.company-matches button { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; border: 1px solid var(--line); background: #fffdf8; border-radius: 4px; padding: 7px 8px; color: var(--ink); font-size: .77rem; }
+.company-matches button:hover { background: #e8efe1; border-color: #adc2a3; }
+.company-matches button > span { min-width: 0; overflow-wrap: anywhere; }
+.company-matches small { flex-shrink: 0; color: var(--muted); font-size: .67rem; }
+.company-facts { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; margin-top: 9px; }
+.company-facts article { padding: 9px; background: #f3ece0; border-radius: 4px; min-width: 0; }
+.company-facts span, .company-facts small { display: block; color: var(--muted); font-size: .71rem; line-height: 1.4; }
+.company-facts strong { display: block; color: var(--dark); font-size: 1.2rem; letter-spacing: -.03em; margin: 2px 0; }
+.company-facts a { color: var(--rust); font-size: .68rem; }
+.company-filings { font-size: .73rem; line-height: 1.6; overflow-wrap: anywhere; color: var(--muted); }
+.company-filings p { margin: 7px 0; }
+.company-filings a { color: var(--rust); }
+.company-case-form { padding-left: 23px; border-left: 1px solid var(--line); min-width: 0; }
+.company-case-form h3 { margin-top: 0; }
+.company-case-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.case-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px 12px; }
+.case-fields input, .case-fields select { display: block; width: 100%; min-width: 0; margin: 4px 0 0; font-size: .82rem; }
+.case-fields .manual-budget { grid-column: 1 / -1; }
+.manual-budget small { display: block; font-weight: 400; margin-top: 3px; font-size: .7rem; }
+.case-envelope { color: var(--green); font-size: .83rem; font-weight: 750; margin: 11px 0 5px; }
+.case-result-link { display: inline-block; margin-top: 5px; color: var(--green); font-size: .78rem; font-weight: 700; }
 .surface { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .assumptions { padding: 16px; }
 h2 { font-size: 1.25rem; letter-spacing: -.035em; margin: 0; }
@@ -139,6 +170,8 @@ td:last-child { font-variant-numeric: tabular-nums; }
 @media (max-width: 740px) {
   .site-bar { justify-content: space-between; }
   .site-bar nav { display: none; }
+  .company-layout { grid-template-columns: minmax(0,1fr); gap: 15px; }
+  .company-case-form { padding: 15px 0 0; border-left: 0; border-top: 1px solid var(--line); }
 }
 @media (max-width: 660px) {
   main { padding-inline: 12px; }
