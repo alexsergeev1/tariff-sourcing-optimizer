@@ -5,20 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Evaluate a four-quarter sourcing plan under tariffs, supply disruption, and shared capital constraints.">
   <title>Tariff Sourcing Optimizer</title>
-  <link rel="stylesheet" href="./styles.css?v=1">
+  <link rel="stylesheet" href="./styles.css?v=2">
 </head>
 <body>
   <header class="site-bar">
     <a class="brand" href="./">Tariff Sourcing Optimizer</a>
-    <nav aria-label="Report sections"><a href="#allocation">Order plan</a><a href="#trade-evidence">Trade data</a></nav>
+    <nav aria-label="Report sections"><a href="#allocation">Order plan</a><a href="#cost-ledger">Cost ledger</a><a href="#trade-evidence">Trade data</a><a href="#schedule-search">HTS search</a></nav>
     <div class="header-actions"><button class="button secondary" id="export-audit" type="button" disabled>Export audit JSON</button><button class="button secondary" id="export-memo" type="button" disabled>Download memo</button></div>
   </header>
   <main>
     <section class="hero" aria-labelledby="title">
       <div>
         <p class="eyebrow">Procurement capital planning</p>
-        <h1 id="title">Decide what to source, where, and when.</h1>
-        <p>Test a four-quarter sourcing plan against tariff changes, demand shifts, and supply interruptions. Compare the cost of changing suppliers with the risk of staying put.</p>
+        <h1 id="title">Sourcing decision terminal</h1>
+        <p>Compare quarterly order plans, supplier qualification, and capital needs under tariff and supply shocks.</p>
       </div>
       <div class="hero-decision">
         <span>Recommended qualification program</span>
@@ -30,8 +30,16 @@
     <div class="workspace">
       <aside class="assumptions surface" aria-labelledby="settings-title">
         <h2 id="settings-title">Plan assumptions</h2>
+        <fieldset class="buyer-controls">
+          <legend>Buyer model</legend>
+          <p id="buyer-status" role="status">Representative industrial buyer</p>
+          <label for="buyer-file">Load local buyer JSON</label>
+          <input id="buyer-file" type="file" accept=".json,application/json">
+          <div class="buyer-actions"><a href="./data/buyer.example.json" download>Sample JSON</a><button class="button secondary" id="reset-buyer" type="button" disabled>Use demo buyer</button></div>
+          <p class="help">Files are processed in this tab.</p>
+        </fieldset>
         <form id="study-form">
-          <label for="tariff-shock">Incumbent tariff shock <output id="tariff-value">+20 pp</output></label>
+          <label for="tariff-shock">Tariff shock input <output id="tariff-value">+20 pp</output></label>
           <input id="tariff-shock" name="tariff-shock" type="range" min="0" max="80" step="1" value="20">
 
           <label for="qual-budget">Qualification budget <output id="qual-value">$1.80M</output></label>
@@ -88,24 +96,51 @@
       </div>
     </section>
 
+    <section class="surface section wide" id="cost-ledger" aria-labelledby="ledger-title">
+      <div class="section-heading">
+        <div><h2 id="ledger-title">Cost and cash ledger</h2><p class="help">Trace the cost difference to duties, freight, qualification, shortage penalties, or inventory carry.</p></div>
+        <label class="select-label" for="ledger-scenario">View <select id="ledger-scenario"><option value="expected">Probability-weighted year</option></select></label>
+      </div>
+      <div id="ledger-summary" class="ledger-summary"></div>
+      <div id="ledger-table"></div>
+    </section>
+
     <section class="surface section wide" id="trade-evidence" aria-labelledby="trade-title">
       <div class="section-heading"><div><p class="eyebrow">Source data</p><h2 id="trade-title">U.S. tariff and import evidence</h2></div><label class="select-label" for="trade-family">Product family <select id="trade-family" disabled></select></label></div>
       <div class="subheading"><h3>USITC tariff schedule</h3><label class="select-label" for="hts-release">Schedule <select id="hts-release" disabled></select></label></div>
       <p id="evidence-status" role="status">Loading the archived USITC tariff schedule.</p>
       <div id="evidence-table"></div>
-      <h3>U.S. imports by origin</h3>
+      <div class="subheading"><h3>U.S. imports by origin</h3><label class="select-label" for="import-window">Reporting window <select id="import-window" disabled><option value="36">36 months</option><option value="24">24 months</option><option value="12">12 months</option></select></label></div>
       <p id="imports-status" role="status">Loading the UN Comtrade import snapshot.</p>
       <div class="imports-trend" id="imports-trend"></div>
       <div id="imports-table"></div>
     </section>
 
+    <section class="surface section wide" id="schedule-search" aria-labelledby="search-title">
+      <div class="section-heading"><div><h2 id="search-title">Search the full HTS schedule</h2><p class="help">Search published tariff codes or descriptions. A schedule row is a reference, and effective duty depends on the entry facts.</p></div></div>
+      <form class="market-search" id="market-search">
+        <label for="market-query">Code or description <kbd>/</kbd></label>
+        <div><input id="market-query" type="search" value="850440" minlength="2" maxlength="80" required><button class="button secondary" type="submit">Search</button></div>
+        <div class="market-filters"><label>Chapter <select id="market-chapter" disabled></select></label><label>Release <select id="market-release" disabled></select></label></div>
+      </form>
+      <p class="status" id="market-status" role="status"></p>
+      <div id="market-results"></div>
+    </section>
+
+    <section class="surface section wide source-freshness" id="source-freshness" data-repo="alexsergeev1/tariff-sourcing-optimizer" aria-labelledby="source-title">
+      <div class="section-heading"><div><h2 id="source-title">Public data updates</h2><p class="help" id="source-checked" role="status">Loading source status…</p></div><button class="button secondary" id="source-refresh" type="button">Refresh status</button></div>
+      <ul id="source-results"></ul>
+      <a href="https://github.com/alexsergeev1/tariff-sourcing-optimizer/actions/workflows/source-status.yml">Source check runs ↗</a>
+    </section>
+
     <section class="surface section wide methods" aria-labelledby="methods-title">
       <h2 id="methods-title">Model and validation</h2>
       <p>The engine evaluates <strong id="policy-count">—</strong> candidate policies over six shared scenarios and selects one policy per component using dynamic programming. Its objective blends expected cost with the conditional cost of the adverse scenarios. The 95% tail cost is reported for the finished portfolio.</p>
-      <p>Company volumes, supplier terms, duty assumptions, and scenario probabilities are synthetic. The USITC records document tariff classifications and published schedule text. They do not set a buyer's effective duty.</p>
+      <p>The demo buyer has synthetic volumes and supplier terms. Uploaded files replace the buyer inputs. Duty assumptions and scenario probabilities are modeled. The USITC records document published classifications and schedule text.</p>
       <p>Both baselines use the same capacity, budget, and recourse rules. The cheapest static plan chooses against unchanged assumed tariffs and normal demand, then gets scored under the same six scenarios as the recommended plan.</p>
     </section>
   </main>
-  <script type="module" src="./app.mjs?v=1"></script>
+  <script type="module" src="./app.mjs?v=2"></script>
+  <script type="module" src="./source-status.mjs?v=1"></script>
 </body>
 </html>

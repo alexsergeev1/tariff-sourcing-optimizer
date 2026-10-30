@@ -1,16 +1,14 @@
+import { buyerLimits, lanes, validateBuyer } from "./buyer.mjs";
+
 const RESOURCE_STEP = 25_000;
+const MAX_SEARCH_STATES = 200_000;
 const QUARTERS = [1, 2, 3, 4];
 const SEASON = [0.92, 1, 1.03, 1.05];
 
-// Representative planning inputs. Rates and contracts are modeled, not customs data.
-const lanes = {
-  CN: { freight: 0.035, duty: 0.08, policyExposure: 1, transitDays: 42 },
-  VN: { freight: 0.042, duty: 0.04, policyExposure: 0.21, transitDays: 47 },
-  KR: { freight: 0.048, duty: 0.025, policyExposure: 0.10, transitDays: 38 },
-  TW: { freight: 0.045, duty: 0.03, policyExposure: 0.16, transitDays: 39 },
-  MX: { freight: 0.028, duty: 0.02, policyExposure: 0.08, transitDays: 15 },
-  US: { freight: 0.016, duty: 0, policyExposure: 0, transitDays: 8 },
-};
+function demoSupplier(country, unitCost, capacityShare) {
+  const lane = lanes[country];
+  return { country, unitCost, capacityShare, dutyRate: lane.duty, freightRate: lane.freight, transitDays: lane.transitDays, shockExposure: lane.policyExposure };
+}
 
 // id, part, illustrative HS family, quarterly units, incumbent price, approved
 // alternate and premium, prospective origin and premium, launch cost, lead time.
@@ -25,8 +23,12 @@ const catalog = [
   ["harness", "Wiring harnesses", "854442", 206_000, 32, "VN", 0.09, "MX", 0.11, 350_000, 1],
   ["switch", "Electrical switches", "853650", 205_000, 25, "TW", 0.14, "US", 0.22, 375_000, 2],
   ["housing", "Aluminum housings", "761699", 148_000, 48, "KR", 0.12, "MX", 0.13, 450_000, 1],
-].map(([id, name, hts, volume, price, alternate, alternatePremium, candidate, candidatePremium, qualificationCost, lead]) => ({
-  id, name, hts, volume, price, alternate, alternatePremium, candidate, candidatePremium, qualificationCost, lead,
+].map(([id, name, hs6, volume, price, alternate, alternatePremium, candidate, candidatePremium, qualificationCost, leadQuarters]) => ({
+  id, name, hs6, demo: true, quarterlyDemand: SEASON.map((factor) => volume * factor), baselineAlternateShare: 0.15,
+  primary: demoSupplier("CN", price, 1.13),
+  alternate: demoSupplier(alternate, price * (1 + alternatePremium), 0.58),
+  candidate: { ...demoSupplier(candidate, price * (1 + candidatePremium), 0.66), rampShare: 0.25, qualificationCost, leadQuarters },
+  shortagePenaltyPerUnit: price * 1.6,
 }));
 
 const regimes = [
@@ -62,25 +64,41 @@ function validateConfig(options) {
   finiteInRange(config.riskWeight, "riskWeight", 0, 2);
   for (const name of ["qualificationSlots", "maxStartsPerQuarter"]) {
     if (!Number.isInteger(config[name])) throw new RangeError(`${name} must be an integer.`);
-    finiteInRange(config[name], name, 0, catalog.length);
+    finiteInRange(config[name], name, 0, buyerLimits.components);
   }
   return config;
 }
 
 function enumeratePolicies(part) {
-  const policies = [
-    { id: "locked", name: "Keep current split", alternateShare: 0.15, newShare: 0, launch: 0 },
-    { id: "concentrate", name: "Concentrate incumbent", alternateShare: 0, newShare: 0, launch: 0 },
-    { id: "approved", name: `Expand approved ${part.alternate} supplier`, alternateShare: 0.35, newShare: 0, launch: 0 },
-    { id: "dual-approved", name: `Split with approved ${part.alternate} supplier`, alternateShare: 0.50, newShare: 0, launch: 0 },
-  ];
+  const { baselineAlternateShare, primary, alternate, candidate } = part;
+  const policies = [{ id: "locked", name: "Keep current split", alternateShare: baselineAlternateShare, newShare: 0, launch: 0 }];
+  if (alternate) {
+    const options = [
+      ["concentrate", "Concentrate incumbent", 0],
+      ["approved", part.demo ? `Expand approved ${alternate.country} supplier` : `Use approved ${alternate.country} supplier at 35%`, 0.35],
+      ["dual-approved", part.demo ? `Split with approved ${alternate.country} supplier` : `Use approved ${alternate.country} supplier at 50%`, 0.50],
+      ["alternate-cap", `Use approved ${alternate.country} supplier at capacity`, alternate.capacityShare],
+    ];
+    // The original demo has only its fixed 35% and 50% candidate splits.
+    if (part.demo) options.pop();
+    const shares = new Set([baselineAlternateShare]);
+    for (const [id, name, alternateShare] of options) {
+      if (shares.has(alternateShare) || alternateShare > alternate.capacityShare || 1 - alternateShare > primary.capacityShare + 1e-9) continue;
+      shares.add(alternateShare);
+      policies.push({ id, name, alternateShare, newShare: 0, launch: 0 });
+    }
+  }
+  if (!candidate || baselineAlternateShare === 1) return policies;
   for (const launch of [1, 2]) {
-    for (const newShare of [0.25, 0.45, 0.60]) {
-      if (launch + part.lead > 4) continue;
+    if (launch + candidate.leadQuarters > 4) continue;
+    const maxShare = Math.min(candidate.capacityShare, 1 - baselineAlternateShare);
+    const shares = new Set([0.25, 0.45, 0.60].map((share) => Math.min(share, maxShare)));
+    if (!part.demo) shares.add(maxShare);
+    for (const newShare of shares) {
       policies.push({
         id: `q${launch}-${newShare}`,
-        name: `Qualify ${part.candidate} in Q${launch}`,
-        alternateShare: 0.15, newShare, launch,
+        name: `Qualify ${candidate.country} in Q${launch}`,
+        alternateShare: baselineAlternateShare, newShare, launch,
       });
     }
   }
@@ -88,18 +106,18 @@ function enumeratePolicies(part) {
 }
 
 function planQuarter(part, policy, quarter, scale) {
-  const volume = Math.round(part.volume * SEASON[quarter - 1] * scale);
-  const quartersReady = policy.launch ? quarter - policy.launch - part.lead + 1 : 0;
-  const rampShare = Math.min(0.66, Math.max(0, quartersReady) * 0.25);
+  const volume = Math.round(part.quarterlyDemand[quarter - 1] * scale);
+  const quartersReady = policy.launch ? Math.max(0, quarter - policy.launch - part.candidate.leadQuarters + 1) : 0;
+  const rampShare = part.candidate ? Math.min(part.candidate.capacityShare, quartersReady * part.candidate.rampShare) : 0;
   const candidateShare = Math.min(policy.newShare, rampShare);
   const alternateShare = policy.alternateShare;
   const suppliers = [
-    { country: "CN", share: 1 - alternateShare - candidateShare, price: part.price, capacityShare: 1.13 },
-    { country: part.alternate, share: alternateShare, price: part.price * (1 + part.alternatePremium), capacityShare: 0.58 },
-    { country: part.candidate, share: candidateShare, price: part.price * (1 + part.candidatePremium), capacityShare: rampShare },
+    { ...part.primary, role: "primary", share: Math.max(0, 1 - alternateShare - candidateShare) },
+    { ...(part.alternate ?? part.primary), role: "alternate", share: alternateShare, capacityShare: part.alternate?.capacityShare ?? 0 },
+    { ...(part.candidate ?? part.primary), role: "candidate", share: candidateShare, capacityShare: rampShare },
   ];
   const alternateUnits = Math.round(volume * alternateShare);
-  const candidateUnits = Math.round(volume * candidateShare);
+  const candidateUnits = Math.min(volume - alternateUnits, Math.round(volume * candidateShare));
   suppliers[0].units = volume - alternateUnits - candidateUnits;
   suppliers[1].units = alternateUnits;
   suppliers[2].units = candidateUnits;
@@ -108,7 +126,7 @@ function planQuarter(part, policy, quarter, scale) {
 
 function pipelineCapital(quarter) {
   return quarter.suppliers.reduce((cash, supplier) =>
-    cash + supplier.units * supplier.price * lanes[supplier.country].transitDays / 91.25, 0);
+    cash + supplier.units * supplier.unitCost * supplier.transitDays / 91.25, 0);
 }
 
 function scoreQuarter(part, policy, plan, regime, tariffShock) {
@@ -116,17 +134,16 @@ function scoreQuarter(part, policy, plan, regime, tariffShock) {
   let remaining = demand;
   let goods = 0, freight = 0, duties = 0, contingency = 0;
   const supplierState = plan.suppliers.map((supplier) => {
-    const lane = lanes[supplier.country];
     const capacity = Math.floor(plan.volume * supplier.capacityShare * (regime.disruption[supplier.country] ?? 1));
-    const tariff = lane.duty + tariffShock / 100 * regime.shock * lane.policyExposure;
-    return { supplier, lane, capacity, tariff, delivered: 0 };
+    const tariff = supplier.dutyRate + tariffShock / 100 * regime.shock * supplier.shockExposure;
+    return { supplier, capacity, tariff, delivered: 0 };
   });
 
   function purchase(state, units, emergency) {
-    const { supplier, lane, tariff } = state;
-    const value = units * supplier.price;
+    const { supplier, tariff } = state;
+    const value = units * supplier.unitCost;
     goods += value;
-    freight += value * lane.freight * regime.freight;
+    freight += value * supplier.freightRate * regime.freight;
     duties += value * tariff;
     if (emergency) contingency += value * 0.09;
     state.delivered += units;
@@ -134,22 +151,22 @@ function scoreQuarter(part, policy, plan, regime, tariffShock) {
   }
 
   const targetAlternate = Math.round(demand * plan.suppliers[1].share);
-  const targetCandidate = Math.round(demand * plan.suppliers[2].share);
+  const targetCandidate = Math.min(demand - targetAlternate, Math.round(demand * plan.suppliers[2].share));
   const orders = [demand - targetAlternate - targetCandidate, targetAlternate, targetCandidate];
   for (const [i, state] of supplierState.entries()) purchase(state, Math.min(orders[i], state.capacity), false);
 
   // Contingency orders can only fill a shortfall through pre-approved capacity.
   const overflow = supplierState.toSorted((a, b) =>
-    a.supplier.price * (1 + a.tariff + a.lane.freight * regime.freight) -
-    b.supplier.price * (1 + b.tariff + b.lane.freight * regime.freight));
+    a.supplier.unitCost * (1 + a.tariff + a.supplier.freightRate * regime.freight) -
+    b.supplier.unitCost * (1 + b.tariff + b.supplier.freightRate * regime.freight));
   for (const state of overflow) {
     if (remaining <= 0) break;
     purchase(state, Math.min(remaining, state.capacity - state.delivered), true);
   }
 
   const shortageUnits = remaining;
-  const shortagePenalty = shortageUnits * part.price * 1.6;
-  const qualificationCost = policy.launch === plan.quarter ? part.qualificationCost : 0;
+  const shortagePenalty = shortageUnits * part.shortagePenaltyPerUnit;
+  const qualificationCost = policy.launch === plan.quarter ? part.candidate.qualificationCost : 0;
   const holdingCost = pipelineCapital(plan) * 0.11 / 4;
   const totalCost = goods + freight + duties + contingency + shortagePenalty + qualificationCost + holdingCost;
   return { totalCost, shortageUnits, demand, goods, freight, duties, contingency, shortagePenalty, qualificationCost, holdingCost };
@@ -171,7 +188,7 @@ function evaluatePolicy(part, policy, config, lockedQuarters) {
   const adverseCost = scenarioCosts.reduce((sum, row, i) =>
     sum + (adverseIds.has(row.id) ? row.totalCost * regimes[i].probability : 0), 0) / adverseProbability;
   const staticCost = quarters.reduce((sum, quarter) => sum + scoreQuarter(part, policy, quarter, staticRegime, 0).totalCost, 0);
-  const qualificationCost = policy.launch ? part.qualificationCost : 0;
+  const qualificationCost = policy.launch ? part.candidate.qualificationCost : 0;
   return {
     part, policy, quarters, scenarioCosts, expectedCost, adverseCost, staticCost, qualificationCost, workingCapital,
     score: (expectedCost + config.riskWeight * adverseCost) / (1 + config.riskWeight),
@@ -204,6 +221,7 @@ function solve(optionsByComponent, config, objective) {
         const score = state.score + option[objective];
         const previous = next.get(key);
         if (!previous || score < previous.score - 1e-7) next.set(key, { slots, firstQuarter, qualification, capital, score, choices: [...state.choices, option] });
+        if (next.size > MAX_SEARCH_STATES) throw new RangeError("The portfolio exceeds the search-state limit. Lower the cash or qualification limits, or upload fewer components.");
       }
     }
     states = next;
@@ -232,13 +250,14 @@ function describe(option, lockedCost) {
   const finalShare = option.quarters.at(-1).suppliers[2].share;
   const label = policy.launch ? `${policy.name} to reach ${Math.round(finalShare * 100)}% by Q4` : policy.name;
   return {
-    id: part.id, name: part.name, hts: part.hts, policy: label, policyId: policy.id,
+    id: part.id, name: part.name, hts: part.hs6, policy: label, policyId: policy.id,
     qualificationCost, workingCapital, qualificationQuarter: policy.launch || null,
-    firstQualifiedQuarter: policy.launch ? policy.launch + part.lead : null,
+    candidateCountry: policy.launch ? part.candidate.country : null,
+    firstQualifiedQuarter: policy.launch ? policy.launch + part.candidate.leadQuarters : null,
     expectedCost, expectedSavings: lockedCost - expectedCost,
     quarters: option.quarters.map(({ quarter, volume, suppliers }) => ({
       quarter, volume, suppliers: suppliers.filter((supplier) => supplier.units > 0)
-        .map(({ country, units, share }) => ({ country, units, share })),
+        .map(({ country, role, units, share }) => ({ country, role, units, share })),
     })),
   };
 }
@@ -254,7 +273,7 @@ function summarize(label, options, lockedOptions) {
   const expectedUnits = weighted(scenarioCosts, "demand");
   return {
     label, expectedCost, cvar95: cvar95(scenarioCosts), worstCost: Math.max(...scenarioCosts.map((row) => row.totalCost)),
-    expectedShortageUnits, expectedUnits, fillRate: 1 - expectedShortageUnits / expectedUnits,
+    expectedShortageUnits, expectedUnits, fillRate: expectedUnits ? 1 - expectedShortageUnits / expectedUnits : 1,
     qualificationCost: options.reduce((sum, option) => sum + option.qualificationCost, 0),
     qualificationSlots: options.reduce((sum, option) => sum + option.slots, 0),
     qualificationStarts: QUARTERS.map((quarter) => options.filter((option) => option.policy.launch === quarter).length),
@@ -271,8 +290,8 @@ function summarize(label, options, lockedOptions) {
   };
 }
 
-function prepare(config) {
-  return catalog.map((part) => {
+function prepare(config, components) {
+  return components.map((part) => {
     const policies = enumeratePolicies(part);
     const locked = QUARTERS.map((quarter) => planQuarter(part, policies[0], quarter, config.portfolioScale));
     return policies.map((policy) => evaluatePolicy(part, policy, config, locked));
@@ -281,7 +300,9 @@ function prepare(config) {
 
 export function runStudy(options = {}) {
   const config = validateConfig(options);
-  const choices = prepare(config);
+  const buyerInput = options.buyer == null ? null : validateBuyer(options.buyer);
+  const components = buyerInput?.components ?? catalog;
+  const choices = prepare(config, components);
   const locked = choices.map((part) => part[0]);
   const robust = solve(choices, config, "score");
   const cheapest = solve(choices, config, "staticCost");
@@ -293,7 +314,7 @@ export function runStudy(options = {}) {
   const tariffPoints = [...new Set([0, 5, 10, 15, 20, 30, 45, 60, 80, config.tariffShock])].sort((a, b) => a - b);
   const sensitivity = options.includeSensitivity === false ? [] : tariffPoints.map((tariffShock) => {
     const adjusted = { ...config, tariffShock };
-    const study = tariffShock === config.tariffShock ? choices : prepare(adjusted);
+    const study = tariffShock === config.tariffShock ? choices : prepare(adjusted, components);
     const solution = tariffShock === config.tariffShock ? robust : solve(study, adjusted, "score");
     return {
       tariffShock, optimizedExpected: solution.choices.reduce((sum, row) => sum + row.expectedCost, 0),
@@ -306,7 +327,9 @@ export function runStudy(options = {}) {
     point.portfolio.some((row, i) => row.policyId !== robust.choices[i].policy.id));
   return {
     config,
-    components: catalog.map(({ id, name, hts }) => ({ id, name, hts })),
+    buyer: { name: buyerInput?.name ?? "Representative industrial buyer", kind: buyerInput ? "custom" : "demo", componentCount: components.length },
+    buyerInput,
+    components: components.map(({ id, name, hs6 }) => ({ id, name, hts: hs6 })),
     scenarios: regimes.map(({ id, name, probability, demand, shock }) => ({ id, name, probability, demand, shock })),
     strategies: strategy, recommendation: strategy.optimized.allocations, sensitivity,
     nextDecisionChange: nextDecisionChange?.tariffShock ?? null,
@@ -315,7 +338,8 @@ export function runStudy(options = {}) {
       method: "Exact multiple-choice dynamic programming over enumerated quarterly policies and conservative budget units",
       budgetStep: RESOURCE_STEP, candidatePolicies: choices.reduce((sum, row) => sum + row.length, 0),
       feasibleTransitions: robust.visited, reachableBudgetStates: robust.reachable,
-      forecastSource: "Modeled buyer, contracts, duties and scenario weights",
+      forecastSource: buyerInput ? "Buyer-supplied planning assumptions with modeled stress scenarios" : "Modeled buyer, contracts, duties and scenario weights",
+      maxSearchStates: MAX_SEARCH_STATES,
       tailMetric: "Mean of the most expensive 5% of the discrete scenario distribution",
     },
   };

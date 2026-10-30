@@ -1,4 +1,4 @@
-import { runStudy } from "./engine.mjs?v=1";
+import { validateBuyer } from "./buyer.mjs?v=2";
 import { boardMemo } from "./memo.mjs?v=1";
 
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,13 @@ const inputs = [
 let study;
 let schedule;
 let imports;
+let buyer;
+let buyerRead = 0;
+let pendingRun = false;
+let marketIndex;
+let marketSearch = 0;
+const chapters = new Map();
+const worker = new Worker(new URL("./worker.mjs?v=2", import.meta.url), { type: "module" });
 
 function money(value) {
   const amount = Math.abs(value);
@@ -46,10 +53,9 @@ function setOutputValues() {
 function renderHeadline(best, comparison, label) {
   const launches = best.allocations.filter((part) => part.qualificationQuarter);
   $("hero-plan").textContent = launches.length ? `Qualify ${launches.length} new ${launches.length === 1 ? "supplier" : "suppliers"}` : "Use approved suppliers";
-  $("hero-detail").textContent = launches.length ? launches.map((part) => {
-    const last = part.quarters.at(-1).suppliers.at(-1);
-    return `${part.name} → ${origins[last.country]} in Q${part.qualificationQuarter}`;
-  }).join(" · ") : "Adjust order shares across qualified lanes within the selected limits.";
+  $("hero-detail").textContent = launches.length ? launches.map((part) =>
+    `${part.name} → ${origins[part.candidateCountry]} in Q${part.qualificationQuarter}`
+  ).join(" · ") : "Adjust order shares across qualified lanes within the selected limits.";
   $("expected-cost").textContent = money(best.expectedCost);
   $("cost-delta").textContent = difference(comparison.expectedCost - best.expectedCost, label);
   $("tail-cost").textContent = money(best.cvar95);
@@ -112,7 +118,8 @@ function renderAllocations() {
     const button = element("button");
     button.type = "button";
     button.setAttribute("aria-pressed", String(entry.quarter === quarter));
-    button.append(element("span", `Q${entry.quarter}`), element("strong", money(entry.expectedCost)));
+    const delta = comparison.quarterly[entry.quarter - 1].expectedCost - entry.expectedCost;
+    button.append(element("span", `Q${entry.quarter}`), element("strong", money(entry.expectedCost)), element("small", difference(delta, "baseline")));
     button.addEventListener("click", () => {
       $("quarter").value = entry.quarter;
       renderAllocations();
@@ -145,7 +152,40 @@ function renderStudy() {
   renderScenarios(optimized, comparison);
   renderSensitivity();
   renderAllocations();
+  renderLedger();
   $("policy-count").textContent = quantity.format(study.validation.candidatePolicies);
+}
+
+const costFields = [
+  ["goods", "Goods"], ["freight", "Freight"], ["duties", "Duties"], ["contingency", "Emergency sourcing premium"],
+  ["shortagePenalty", "Shortage penalties"], ["qualificationCost", "Qualification"], ["holdingCost", "Inventory carry"],
+];
+
+function renderLedger() {
+  if (!study) return;
+  const { optimized } = study.strategies;
+  const comparison = study.strategies[$("baseline").value];
+  const id = $("ledger-scenario").value;
+  const expected = id === "expected";
+  const left = expected ? comparison.breakdown : comparison.scenarioCosts.find((scenario) => scenario.id === id);
+  const right = expected ? optimized.breakdown : optimized.scenarioCosts.find((scenario) => scenario.id === id);
+  const baseTotal = expected ? comparison.expectedCost : left.totalCost;
+  const planTotal = expected ? optimized.expectedCost : right.totalCost;
+  const shortage = expected ? optimized.expectedShortageUnits : right.shortageUnits;
+  $("ledger-summary").replaceChildren(...[
+    ["Plan cost", money(planTotal)],
+    ["Cost difference", difference(baseTotal - planTotal, "comparison")],
+    ["Unfilled units", quantity.format(shortage)],
+  ].map(([label, value]) => {
+    const card = element("article");
+    card.append(element("span", label), element("strong", value));
+    return card;
+  }));
+  $("ledger-table").replaceChildren(evidenceTable(
+    ["Cost driver", "Comparison", "Plan", "Plan minus comparison"],
+    [...costFields.map(([key, label]) => [label, money(left[key]), money(right[key]), money(right[key] - left[key])]),
+      ["Total", money(baseTotal), money(planTotal), money(planTotal - baseTotal)]],
+  ));
 }
 
 function evidenceTable(headers, rows) {
@@ -177,6 +217,102 @@ function evidenceLink(text, url) {
   return paragraph;
 }
 
+function codeDigits(code) {
+  return code.replace(/[^0-9]/g, "");
+}
+
+async function getChapter(chapter) {
+  if (!chapters.has(chapter.code)) {
+    const response = await fetch(chapter.path);
+    if (!response.ok) throw new Error("Chapter download failed.");
+    chapters.set(chapter.code, await response.json());
+  }
+  return chapters.get(chapter.code);
+}
+
+async function searchMarket() {
+  if (!marketIndex) return;
+  const token = ++marketSearch;
+  const query = $("market-query").value.trim().toLowerCase();
+  const numeric = /^[0-9.]+$/.test(query);
+  const prefix = numeric ? codeDigits(query) : "";
+  const chapterCode = numeric ? prefix.slice(0, 2) : $("market-chapter").value;
+  const chapter = marketIndex.chapters.find(({ code }) => code === chapterCode);
+  if (!chapter || query.length < 2) {
+    $("market-status").textContent = "Choose an indexed chapter or enter its two-digit code.";
+    $("market-results").replaceChildren();
+    return;
+  }
+  $("market-chapter").value = chapter.code;
+  $("market-status").textContent = `Searching chapter ${chapter.code}…`;
+  try {
+    const data = await getChapter(chapter);
+    if (token !== marketSearch) return;
+    const releaseId = $("market-release").value;
+    const releaseIndex = marketIndex.releases.findIndex(({ id }) => id === releaseId);
+    const release = marketIndex.releases[releaseIndex];
+    const earlier = marketIndex.releases[releaseIndex - 1];
+    const previousRates = new Map();
+    for (const line of data.releases[earlier?.id] ?? []) {
+      const key = line.code + "|" + line.description;
+      const rates = previousRates.get(key) ?? new Set();
+      rates.add(line.general || "—");
+      previousRates.set(key, rates);
+    }
+    const terms = query.split(/\s+/);
+    const lines = (data.releases[releaseId] ?? []).filter((line) =>
+      numeric ? codeDigits(line.code).startsWith(prefix) : terms.every((term) => line.description.toLowerCase().includes(term)));
+    const shown = lines.slice(0, 40);
+    const indexed = marketIndex.indexedObservations;
+    $("market-status").textContent = `${quantity.format(lines.length)} matches in chapter ${chapter.code} · ${release.label} · ${quantity.format(indexed)} coded rows across all revisions.` +
+      (lines.length > shown.length ? ` Showing the first ${shown.length}. Refine your search to narrow results.` : "");
+    const rows = shown.map((line) => {
+      const previous = previousRates.get(line.code + "|" + line.description);
+      const general = line.general || "—";
+      const difference = earlier && previous && !previous.has(general) ? [...previous].join(" / ") + " → " + general : "—";
+      return [line.code, line.description, general, line.special || "—", line.column2 || "—", difference];
+    });
+    $("market-results").replaceChildren(
+      ...(rows.length ? [evidenceTable(["HTS code", "Published description", "General", "Special", "Column 2", "General rate change"], rows)] : []),
+      evidenceLink(release.label + " · USITC ↗", release.url),
+    );
+  } catch (error) {
+    if (token === marketSearch) $("market-status").textContent = error.message;
+  }
+}
+
+async function initializeMarket() {
+  try {
+    const response = await fetch("./data/hts-index.json");
+    if (!response.ok) throw new Error("The full schedule index is unavailable.");
+    marketIndex = await response.json();
+    $("market-chapter").replaceChildren(...marketIndex.chapters.map(({ code, label }) => new Option(`${code} · ${label}`, code)));
+    $("market-release").replaceChildren(...marketIndex.releases.map(({ id, label }) => new Option(label, id)));
+    $("market-release").value = marketIndex.releases.at(-1).id;
+    $("market-release").disabled = false;
+    $("market-chapter").disabled = false;
+    await searchMarket();
+  } catch (error) {
+    $("market-status").textContent = error.message;
+  }
+}
+
+$("market-search").addEventListener("submit", (event) => {
+  event.preventDefault();
+  searchMarket();
+});
+$("market-release").addEventListener("change", searchMarket);
+$("market-chapter").addEventListener("change", () => {
+  if (/^[0-9.]+$/.test($("market-query").value.trim())) $("market-query").value = $("market-chapter").value;
+  searchMarket();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.altKey || event.ctrlKey || event.metaKey ||
+    event.target.closest("input, select, textarea, button, [contenteditable]")) return;
+  event.preventDefault();
+  $("market-query").focus();
+});
+
 function renderTariffEvidence(family) {
   if (!schedule) return;
   const releases = schedule.releases.filter((release) => Array.isArray(release.families));
@@ -201,7 +337,7 @@ function renderImportEvidence(family) {
   if (!imports) return;
   const rows = imports.rows.filter((row) => row.hs6 === family && Number.isFinite(row.valueUsd));
   const periods = [...new Set(rows.map((row) => row.period))].sort();
-  const latest = periods.slice(-12);
+  const latest = periods.slice(-Number($("import-window").value));
   if (!latest.length) {
     $("imports-status").textContent = `No retained UN Comtrade import rows for HS ${family}.`;
     $("imports-trend").replaceChildren();
@@ -220,7 +356,11 @@ function renderImportEvidence(family) {
   const worldRows = rows.filter((row) => String(row.partnerCode) === world && latest.includes(row.period));
   const shown = [...current].filter(([code]) => code !== world).sort((a, b) => b[1] - a[1]);
   const frequency = latest[0].length === 4 ? "years" : "months";
-  $("imports-status").textContent = `${quantity.format(imports.observations ?? imports.rows.length)} public observations in the snapshot. HS ${family} values shown for ${latest[0]} to ${latest.at(-1)} (${latest.length} reporting ${frequency}). ${worldValue ? `World total ${money(worldValue)}.` : "World total unavailable."}`;
+  const [topCode, topValue] = shown[0] ?? [];
+  const concentration = worldValue > 0 && topCode
+    ? ` ${partners.get(topCode) ?? topCode} leads tracked origins at ${percent.format(topValue / worldValue)} of the world total.`
+    : "";
+  $("imports-status").textContent = `${quantity.format(imports.observations ?? imports.rows.length)} public observations in the snapshot. HS ${family} values shown for ${latest[0]} to ${latest.at(-1)} (${latest.length} reporting ${frequency}). ${worldValue ? `World total ${money(worldValue)}.` : "World total unavailable."}${concentration}`;
   const trend = $("imports-trend");
   if (worldRows.length > 1) {
     const chart = element("div", undefined, "trade-columns");
@@ -268,34 +408,70 @@ async function loadEvidence(path, validate, receive, status, table, link) {
 }
 
 function executeStudy() {
+  if (pendingRun) return;
+  pendingRun = true;
   $("run-study").disabled = true;
   $("run-status").textContent = "Evaluating sourcing policies…";
   $("results").setAttribute("aria-busy", "true");
-  setTimeout(() => {
-    try {
-      const config = Object.fromEntries(inputs.map(([id, , key]) => [key, Number($(id).value)]));
-      study = runStudy(config);
-      renderStudy();
-      if (!$("trade-family").options.length) {
-        $("trade-family").replaceChildren(...study.components.map(({ hts, name }) => {
-          const option = element("option", `${name} · ${hts}`);
-          option.value = hts;
-          return option;
-        }));
-        $("trade-family").disabled = false;
-        renderEvidence();
-      }
-      $("export-audit").disabled = false;
-      $("export-memo").disabled = false;
-      $("run-status").textContent = `${quantity.format(study.validation.feasibleTransitions)} feasible transitions checked.`;
-    } catch (error) {
-      $("run-status").textContent = `Optimization failed. ${error.message}`;
-    } finally {
-      $("run-study").disabled = false;
-      $("results").setAttribute("aria-busy", "false");
-    }
-  }, 0);
+  const config = Object.fromEntries(inputs.map(([id, , key]) => [key, Number($(id).value)]));
+  worker.postMessage({ ...config, buyer });
 }
+
+function finishStudy(error) {
+  pendingRun = false;
+  $("run-study").disabled = false;
+  $("results").setAttribute("aria-busy", "false");
+  if (error) $("run-status").textContent = "Optimization failed. " + error;
+}
+
+worker.addEventListener("message", ({ data }) => {
+  finishStudy(data.error);
+  if (data.error) return;
+  study = data.study;
+  const selectedScenario = $("ledger-scenario").value;
+  $("ledger-scenario").replaceChildren(new Option("Probability-weighted year", "expected"),
+    ...study.scenarios.map(({ id, name }) => new Option(name, id)));
+  if (study.scenarios.some(({ id }) => id === selectedScenario)) $("ledger-scenario").value = selectedScenario;
+  const selectedFamily = $("trade-family").value;
+  const families = new Map();
+  for (const { hts, name } of study.components) families.set(hts, name);
+  for (const { hs6 } of schedule?.releases.at(-1)?.families ?? []) if (!families.has(hs6)) families.set(hs6, "Market reference");
+  $("trade-family").replaceChildren(...[...families].map(([hts, name]) => new Option(`${name} · ${hts}`, hts)));
+  if (families.has(selectedFamily)) $("trade-family").value = selectedFamily;
+  $("trade-family").disabled = false;
+  renderStudy();
+  renderEvidence();
+  $("export-audit").disabled = false;
+  $("export-memo").disabled = false;
+  $("run-status").textContent = `${quantity.format(study.validation.feasibleTransitions)} feasible transitions checked.`;
+});
+worker.addEventListener("error", () => finishStudy("The calculation worker could not start. Reload to retry."));
+
+$("buyer-file").addEventListener("change", async (event) => {
+  const version = ++buyerRead;
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    if (file.size > 1_000_000) throw new Error("Use a buyer JSON file under 1 MB.");
+    const verified = validateBuyer(JSON.parse(await file.text()));
+    if (version !== buyerRead) return;
+    buyer = verified;
+    $("buyer-status").textContent = `${buyer.name} · ${buyer.components.length} components. Run optimization to apply.`;
+    $("reset-buyer").disabled = false;
+  } catch (error) {
+    if (version === buyerRead) $("buyer-status").textContent = `File rejected. ${error.message}`;
+  } finally {
+    if (version === buyerRead) event.target.value = "";
+  }
+});
+
+$("reset-buyer").addEventListener("click", () => {
+  buyerRead++;
+  buyer = undefined;
+  $("buyer-file").value = "";
+  $("buyer-status").textContent = "Representative industrial buyer. Run optimization to apply.";
+  $("reset-buyer").disabled = true;
+});
 
 for (const [id] of inputs) $(id).addEventListener("input", () => {
   setOutputValues();
@@ -307,8 +483,10 @@ $("study-form").addEventListener("submit", (event) => {
 });
 $("baseline").addEventListener("change", renderStudy);
 $("quarter").addEventListener("change", renderAllocations);
+$("ledger-scenario").addEventListener("change", renderLedger);
 $("trade-family").addEventListener("change", renderEvidence);
 $("hts-release").addEventListener("change", renderEvidence);
+$("import-window").addEventListener("change", () => renderImportEvidence($("trade-family").value));
 
 function downloadFile(text, type, name) {
   const url = URL.createObjectURL(new Blob([text], { type }));
@@ -335,6 +513,7 @@ $("export-memo").addEventListener("click", () => {
 
 setOutputValues();
 executeStudy();
+initializeMarket();
 loadEvidence("./data/hts-snapshot.json", (data) => Array.isArray(data.releases) && data.releases.length > 0, (data) => {
   schedule = data;
   $("hts-release").replaceChildren(...schedule.releases.map((release) => {
@@ -346,5 +525,8 @@ loadEvidence("./data/hts-snapshot.json", (data) => Array.isArray(data.releases) 
   $("hts-release").disabled = false;
 },
   "evidence-status", "evidence-table", evidenceLink("USITC Harmonized Tariff Schedule", "https://hts.usitc.gov/"));
-loadEvidence("./data/imports.json", (data) => Array.isArray(data.rows) && Array.isArray(data.partners), (data) => { imports = data; },
+loadEvidence("./data/imports.json?v=2", (data) => Array.isArray(data.rows) && Array.isArray(data.partners), (data) => {
+  imports = data;
+  $("import-window").disabled = false;
+},
   "imports-status", "imports-table", evidenceLink("UN Comtrade", "https://comtradeplus.un.org/"));

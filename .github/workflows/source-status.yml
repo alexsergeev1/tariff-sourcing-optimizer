@@ -1,0 +1,58 @@
+name: Check public data sources
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 12 * * *"
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: source-status
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Check upstream release metadata
+        run: node check-sources.mjs "$RUNNER_TEMP/source-status.json"
+      - name: Publish status on its own branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh auth setup-git
+          status_checkout="$(mktemp -d)"
+          git -C "$status_checkout" init --initial-branch=bootstrap
+          git -C "$status_checkout" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          if git -C "$status_checkout" ls-remote --exit-code --heads origin refs/heads/source-status >/dev/null; then
+            git -C "$status_checkout" fetch --depth=1 origin refs/heads/source-status:refs/remotes/origin/source-status
+            git -C "$status_checkout" switch --create source-status --track origin/source-status
+          else
+            result=$?
+            if [ "$result" -ne 2 ]; then
+              exit "$result"
+            fi
+            git -C "$status_checkout" switch --orphan source-status
+          fi
+          cp "$RUNNER_TEMP/source-status.json" "$status_checkout/source-status.json"
+          git -C "$status_checkout" add -- source-status.json
+          if git -C "$status_checkout" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$status_checkout" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update public data source status"
+          git -C "$status_checkout" push origin HEAD:refs/heads/source-status

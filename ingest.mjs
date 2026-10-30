@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 const directory = new URL("./data/", import.meta.url);
@@ -38,34 +38,82 @@ function toPlainText(value) {
     .trim();
 }
 
+function rateLine(row) {
+  return {
+    code: String(row.htsno ?? "").trim(),
+    description: toPlainText(row.description),
+    general: toPlainText(row.general),
+    special: toPlainText(row.special),
+    column2: toPlainText(row.other),
+  };
+}
+
 async function downloadRelease({ file, ...release }) {
   const url = releaseBase + file;
   const data = await getJson(url);
   if (!Array.isArray(data) || data.length < 30_000) throw new Error("Incomplete HTS release: " + release.id);
   const families = new Map(familyCodes.map((hs6) => [hs6, []]));
+  const chapters = new Map();
+  let indexedObservations = 0;
   for (const row of data) {
-    const code = String(row.htsno ?? "");
-    const digits = code.replace(/\D/g, "");
-    const lines = families.get(digits.slice(0, 6));
-    if (!lines) continue;
-    lines.push({
-      code,
-      description: toPlainText(row.description),
-      general: toPlainText(row.general),
-      special: toPlainText(row.special),
-      column2: toPlainText(row.other),
-    });
+    const code = String(row.htsno ?? "").trim();
+    const digits = code.replaceAll(".", "");
+    if (!/^\d{4,10}$/.test(digits)) continue;
+    const chapter = digits.slice(0, 2);
+    const line = rateLine(row);
+    if (!chapters.has(chapter)) chapters.set(chapter, []);
+    chapters.get(chapter).push(line);
+    families.get(digits.slice(0, 6))?.push(line);
+    indexedObservations++;
   }
   const groups = [...families].map(([hs6, lines]) => ({ hs6, count: lines.length, lines }));
   if (groups.some(({ count }) => !count)) throw new Error("Requested family missing from " + release.id);
+  if (chapters.size < 95 || indexedObservations < 10_000) throw new Error("Incomplete chapter index: " + release.id);
   return {
-    ...release,
-    url,
-    observations: data.length,
-    matchedObservations: groups.reduce((sum, group) => sum + group.count, 0),
-    chapter99Rows: data.filter((row) => String(row.htsno ?? "").startsWith("99")).length,
-    families: groups,
+    snapshot: {
+      ...release,
+      url,
+      observations: data.length,
+      indexedObservations,
+      matchedObservations: groups.reduce((sum, group) => sum + group.count, 0),
+      chapter99Rows: chapters.get("99")?.length ?? 0,
+      families: groups,
+    },
+    chapters,
   };
+}
+
+async function tariffSchedules() {
+  const downloads = await Promise.all(releases.map(downloadRelease));
+  const snapshots = downloads.map(({ snapshot }) => snapshot);
+  const observations = snapshots.reduce((sum, release) => sum + release.observations, 0);
+  const indexedObservations = snapshots.reduce((sum, release) => sum + release.indexedObservations, 0);
+  const chapterDirectory = new URL("hts/", directory);
+  await mkdir(chapterDirectory, { recursive: true });
+  const codes = [...new Set(downloads.flatMap(({ chapters }) => [...chapters.keys()]))].sort();
+  const chapters = await Promise.all(codes.map(async (code) => {
+    const filename = "chapter-" + code + ".json";
+    const versions = Object.fromEntries(downloads.map(({ snapshot, chapters }) => [
+      snapshot.id, chapters.get(code) ?? [],
+    ]));
+    const observations = Object.values(versions).reduce((sum, rows) => sum + rows.length, 0);
+    await writeFile(new URL(filename, chapterDirectory), JSON.stringify({ chapter: code, releases: versions }) + "\n");
+    return { code, label: "Chapter " + code, path: "./data/hts/" + filename, observations };
+  }));
+  if (chapters.reduce((sum, chapter) => sum + chapter.observations, 0) !== indexedObservations) {
+    throw new Error("Tariff chapter row counts do not reconcile");
+  }
+  const manifestReleases = snapshots.map(({ id, label, date, url, observations, indexedObservations }) =>
+    ({ id, label, date, url, observations, indexedObservations }));
+  await Promise.all([
+    writeFile(new URL("hts-index.json", directory), JSON.stringify({
+      source: archive, observations, indexedObservations, releases: manifestReleases, chapters,
+    }) + "\n"),
+    writeFile(new URL("hts-snapshot.json", directory), JSON.stringify({
+      source: archive, observations, releases: snapshots,
+    }) + "\n"),
+  ]);
+  console.log(`Parsed ${observations} USITC schedule records across ${snapshots.length} releases and indexed ${indexedObservations} coded rows across ${chapters.length} chapters.`);
 }
 
 async function downloadTradePeriod(period) {
@@ -100,12 +148,35 @@ async function downloadTradePeriod(period) {
 
 async function imports() {
   const years = process.argv.includes("--full-history") ? [2025, 2024, 2023] : [2025];
+  const destination = new URL("imports.json", directory);
+  const existing = new Map();
+  if (process.argv.includes("--resume")) {
+    const snapshot = JSON.parse(await readFile(destination, "utf8").catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return "{}";
+    }));
+    if (snapshot.source === comtrade &&
+        snapshot.partners?.map(({ code }) => code).join(",") === partners.map(({ code }) => code).join(",")) {
+      for (const row of snapshot.rows) {
+        if (!existing.has(row.period)) existing.set(row.period, []);
+        existing.get(row.period).push(row);
+      }
+    }
+  }
   const rows = [];
   for (const year of years) {
     const yearRows = [];
+    let fetched = 0;
     for (let month = 1; month <= 12; month++) {
       const period = year + "-" + String(month).padStart(2, "0");
+      const cached = existing.get(period);
+      const world = cached?.filter(({ partnerCode }) => partnerCode === 0).map(({ hs6 }) => hs6);
+      if (world?.length === familyCodes.length && familyCodes.every((code) => world.includes(code))) {
+        yearRows.push(...cached);
+        continue;
+      }
       yearRows.push(...await downloadTradePeriod(period));
+      fetched++;
       await delay(600);
     }
     rows.unshift(...yearRows);
@@ -119,18 +190,15 @@ async function imports() {
       partners,
       rows,
     };
-    await writeFile(new URL("imports.json", directory), JSON.stringify(snapshot) + "\n");
-    console.log(`Retained ${snapshot.observations} UN Comtrade observations from ${snapshot.start} to ${snapshot.end}.`);
+    if (fetched > 0 || existing.size < new Set(rows.map(({ period }) => period)).size) {
+      await writeFile(destination, JSON.stringify(snapshot) + "\n");
+    }
+    console.log(`Retained ${snapshot.observations} UN Comtrade observations from ${snapshot.start} to ${snapshot.end} (${fetched} new months in ${year}).`);
   }
 }
 
 await mkdir(directory, { recursive: true });
 const work = [];
-if (!process.argv.includes("--trade-only")) work.push((async () => {
-  const snapshots = await Promise.all(releases.map(downloadRelease));
-  const observations = snapshots.reduce((sum, release) => sum + release.observations, 0);
-  await writeFile(new URL("hts-snapshot.json", directory), JSON.stringify({ source: archive, observations, releases: snapshots }) + "\n");
-  console.log(`Parsed ${observations} USITC schedule records across ${snapshots.length} releases.`);
-})());
+if (!process.argv.includes("--trade-only")) work.push(tariffSchedules());
 if (!process.argv.includes("--hts-only")) work.push(imports());
 await Promise.all(work);

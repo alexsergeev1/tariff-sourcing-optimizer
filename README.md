@@ -8,6 +8,12 @@ A four-quarter capital planning tool for a representative industrial buyer. It s
 2. Compare the plan with current sourcing or the cheapest static plan across six scenarios. Inspect each quarter's orders, first delivery dates, and the next sampled tariff shock that changes the plan.
 3. Explore archived U.S. tariff schedules and reported import flows for the same product families. Export the model inputs and full cost ledgers as JSON or download the decision memo.
 
+Use **Load local buyer JSON** to replace the demo's demand and supplier inputs. Start with [the example file](data/buyer.example.json). The validator accepts up to 20 components and checks supplier costs, capacity, ramp, qualification fees, and lead times. Files stay in the tab, and an optimization runs in a worker. Audit exports include the normalized buyer inputs for reproducibility.
+
+The cost ledger compares seven cost drivers for the expected year or a specific stress scenario. The full HTS search loads only the selected chapter, supports tariff-code prefixes and description search, and compares general rate text with the preceding archived release. Use `/` to focus the search.
+
+The import explorer compares origin shares across 12-, 24- or 36-month windows. **Public data updates** shows the latest source check and flags newer releases. GitHub Actions checks USITC and UN Comtrade daily. Optimization inputs stay tied to the documented snapshots.
+
 Run locally with `node serve.mjs` and open [the local demo](http://127.0.0.1:4177/). Run `node --test` for the ledger, budget, delay, and sensitivity tests.
 
 ## Decision model

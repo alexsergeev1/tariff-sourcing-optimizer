@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { validateBuyer } from "./buyer.mjs";
 import { runStudy } from "./engine.mjs";
 
 const close = (actual, expected, tolerance = 1e-6) => assert.ok(
@@ -55,4 +57,41 @@ test("zero qualification capacity disables new supply and sensitivity stays dete
   const current = first.sensitivity.find((point) => point.tariffShock === config.tariffShock);
   close(current.optimizedExpected, first.strategies.optimized.expectedCost);
   assert.throws(() => runStudy({ maxStartsPerQuarter: 1.5 }), RangeError);
+});
+
+const example = JSON.parse(readFileSync(new URL("./data/buyer.example.json", import.meta.url), "utf8"));
+
+test("a custom buyer uses submitted quarterly demand, routes and bounded qualification", () => {
+  const config = { buyer: example, tariffShock: 25, qualificationBudget: 225_000, qualificationSlots: 1, maxStartsPerQuarter: 1, includeSensitivity: false };
+  const study = runStudy(config);
+  assert.equal(study.buyer.kind, "custom");
+  assert.equal(study.buyer.componentCount, 3);
+  assert.equal(study.buyerInput.components[0].primary.dutyRate, 0.12);
+  assert.equal(study.buyerInput.components[0].alternate.transitDays, 39);
+  assert.equal(study.buyerInput.components[1].alternate, null);
+  assert.deepEqual(study.recommendation.map((part) => part.quarters.map(({ volume }) => volume)), example.components.map((part) => part.quarterlyDemand));
+  assert.ok(study.strategies.optimized.qualificationCost <= config.qualificationBudget);
+  const launches = study.recommendation.filter((part) => part.qualificationQuarter);
+  assert.equal(launches.length, 1);
+  for (const quarter of launches[0].quarters) {
+    const candidate = quarter.suppliers.find(({ role }) => role === "candidate");
+    if (quarter.quarter < launches[0].firstQualifiedQuarter) assert.equal(candidate, undefined);
+    else assert.equal(candidate?.country, launches[0].candidateCountry);
+  }
+  assert.deepEqual(runStudy({ ...config, buyer: study.buyerInput }), study);
+});
+
+test("custom buyer validation rejects duplicate IDs, non-numeric values, invalid capacities and markup", () => {
+  const invalid = (modify, error) => {
+    const buyer = structuredClone(example);
+    modify(buyer, buyer.components[0]);
+    assert.throws(() => validateBuyer(buyer), error);
+  };
+  invalid((buyer, part) => { buyer.components[1].id = part.id.toUpperCase(); }, /unique identifiers/);
+  invalid((_, part) => { part.quarterlyDemand[0] = "95000"; }, /quarterlyDemand\[0\]/);
+  invalid((_, part) => { part.primary.country = "ZZ"; }, /primary.country/);
+  invalid((_, part) => { part.baselineAlternateShare = 0.8; }, /baselineAlternateShare/);
+  invalid((_, part) => { part.candidate.rampShare = 0.8; }, /candidate.rampShare/);
+  invalid((_, part) => { part.name = "<script>alert(1)</script>"; }, /plain name/);
+  invalid((_, part) => { part.primary.override = 1; }, /unrecognized field/);
 });

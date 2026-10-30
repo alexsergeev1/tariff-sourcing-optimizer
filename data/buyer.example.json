@@ -1,0 +1,33 @@
+{
+  "name": "Sample industrial controls buyer",
+  "components": [
+    {
+      "id": "power-module",
+      "name": "Power modules",
+      "hs6": "850440",
+      "quarterlyDemand": [95000, 104000, 109000, 120000],
+      "baselineAlternateShare": 0.20,
+      "shortagePenaltyPerUnit": 110,
+      "primary": { "country": "CN", "unitCost": 58, "capacityShare": 1.12, "dutyRate": 0.12 },
+      "alternate": { "country": "TW", "unitCost": 66, "capacityShare": 0.48 },
+      "candidate": { "country": "MX", "unitCost": 63, "capacityShare": 0.68, "rampShare": 0.28, "qualificationCost": 225000, "leadQuarters": 1 }
+    },
+    {
+      "id": "fan-pack",
+      "name": "Cooling fans",
+      "hs6": "841459",
+      "quarterlyDemand": [150000, 150000, 164000, 176000],
+      "primary": { "country": "CN", "unitCost": 43, "capacityShare": 1.15 },
+      "candidate": { "country": "MX", "unitCost": 46, "capacityShare": 0.65, "rampShare": 0.35, "qualificationCost": 175000, "leadQuarters": 1 }
+    },
+    {
+      "id": "flow-control",
+      "name": "Flow control assemblies",
+      "hs6": "848180",
+      "quarterlyDemand": [59000, 64000, 66000, 68500],
+      "baselineAlternateShare": 0.35,
+      "primary": { "country": "KR", "unitCost": 81, "capacityShare": 0.95 },
+      "alternate": { "country": "US", "unitCost": 88, "capacityShare": 0.50, "transitDays": 6 }
+    }
+  ]
+}

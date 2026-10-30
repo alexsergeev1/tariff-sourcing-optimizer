@@ -3,12 +3,12 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 
 const media = { ".html": "text/html", ".css": "text/css", ".mjs": "text/javascript", ".json": "application/json", ".md": "text/plain" };
-const assets = new Set(["/index.html", "/styles.css", "/app.mjs", "/engine.mjs", "/memo.mjs", "/data/hts-snapshot.json", "/data/imports.json", "/README.md", "/DATA.md"]);
+const assets = new Set(["/index.html", "/styles.css", "/app.mjs", "/engine.mjs", "/memo.mjs", "/buyer.mjs", "/worker.mjs", "/source-status.mjs", "/data/source-status.json", "/data/hts-snapshot.json", "/data/imports.json", "/data/hts-index.json", "/data/buyer.example.json", "/README.md", "/DATA.md"]);
 
 createServer(async (request, response) => {
   const pathname = new URL(request.url, "http://127.0.0.1").pathname;
   const file = pathname === "/" ? "/index.html" : pathname;
-  if (!assets.has(file)) return response.writeHead(404).end();
+  if (!assets.has(file) && !/^\/data\/hts\/chapter-\d{2}\.json$/.test(file)) return response.writeHead(404).end();
   try {
     const content = await readFile(new URL("." + file, import.meta.url));
     response.writeHead(200, { "Content-Type": media[extname(file)] + "; charset=utf-8" }).end(content);
