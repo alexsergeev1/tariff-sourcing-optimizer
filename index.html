@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Evaluate a four-quarter sourcing plan under tariffs, supply disruption, and shared capital constraints.">
+  <title>Tariff Sourcing Optimizer</title>
+  <link rel="stylesheet" href="./styles.css?v=1">
+</head>
+<body>
+  <header class="site-bar">
+    <a class="brand" href="./">Tariff Sourcing Optimizer</a>
+    <nav aria-label="Report sections"><a href="#allocation">Order plan</a><a href="#trade-evidence">Trade data</a></nav>
+    <div class="header-actions"><button class="button secondary" id="export-audit" type="button" disabled>Export audit JSON</button><button class="button secondary" id="export-memo" type="button" disabled>Download memo</button></div>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="title">
+      <div>
+        <p class="eyebrow">Procurement capital planning</p>
+        <h1 id="title">Decide what to source, where, and when.</h1>
+        <p>Test a four-quarter sourcing plan against tariff changes, demand shifts, and supply interruptions. Compare the cost of changing suppliers with the risk of staying put.</p>
+      </div>
+      <div class="hero-decision">
+        <span>Recommended qualification program</span>
+        <strong id="hero-plan">—</strong>
+        <p id="hero-detail">Running the default scenario.</p>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <aside class="assumptions surface" aria-labelledby="settings-title">
+        <h2 id="settings-title">Plan assumptions</h2>
+        <form id="study-form">
+          <label for="tariff-shock">Incumbent tariff shock <output id="tariff-value">+20 pp</output></label>
+          <input id="tariff-shock" name="tariff-shock" type="range" min="0" max="80" step="1" value="20">
+
+          <label for="qual-budget">Qualification budget <output id="qual-value">$1.80M</output></label>
+          <input id="qual-budget" name="qual-budget" type="range" min="0" max="4000000" step="50000" value="1800000">
+
+          <label for="capital-budget">Extra pipeline cash <output id="capital-value">$4.20M</output></label>
+          <input id="capital-budget" name="capital-budget" type="range" min="0" max="8000000" step="100000" value="4200000">
+
+          <label for="qualification-slots">Supplier qualification slots <output id="slots-value">4</output></label>
+          <input id="qualification-slots" name="qualification-slots" type="range" min="0" max="4" step="1" value="4">
+
+          <label for="risk-weight">Adverse-regime weight <output id="risk-value">0.55</output></label>
+          <input id="risk-weight" name="risk-weight" type="range" min="0" max="2" step="0.05" value="0.55">
+          <p class="help">The shock is a scenario input. The optimizer assumes at most two qualification starts per quarter.</p>
+          <button class="button primary" id="run-study" type="submit">Run optimization</button>
+          <p class="status" id="run-status" role="status" aria-live="polite"></p>
+        </form>
+      </aside>
+
+      <div class="results" id="results" aria-busy="true">
+        <section class="kpis" aria-label="Headline results">
+          <article class="surface kpi"><span>Expected annual cost</span><strong id="expected-cost">—</strong><small id="cost-delta"></small></article>
+          <article class="surface kpi"><span>95% tail cost</span><strong id="tail-cost">—</strong><small id="tail-delta"></small></article>
+          <article class="surface kpi"><span>Qualification spend</span><strong id="qualification-cost">—</strong><small id="qual-detail"></small></article>
+          <article class="surface kpi"><span>Extra pipeline cash</span><strong id="working-capital">—</strong><small id="capital-detail"></small></article>
+        </section>
+
+        <section class="surface section" aria-labelledby="scenarios-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Risk comparison</p><h2 id="scenarios-title">Cost by scenario</h2></div>
+            <label class="select-label" for="baseline">Compare with <select id="baseline"><option value="locked">Current sourcing</option><option value="cheapest">Cheapest static plan</option></select></label>
+          </div>
+          <p class="legend"><span class="legend-key baseline">Comparison plan</span><span class="legend-key recommended">Recommended plan</span></p>
+          <div id="scenario-chart"></div>
+          <p class="help" id="shortage-detail"></p>
+        </section>
+
+        <section class="surface section" aria-labelledby="sensitivity-title">
+          <div class="section-heading"><div><p class="eyebrow">Policy sensitivity</p><h2 id="sensitivity-title">When does the plan change?</h2></div><strong id="trigger">—</strong></div>
+          <p class="help" id="trigger-detail"></p>
+          <div class="sensitivity" id="sensitivity"></div>
+        </section>
+      </div>
+    </div>
+
+    <section class="surface section wide" id="allocation" aria-labelledby="allocation-title">
+      <div class="section-heading">
+        <div><p class="eyebrow">Execution plan</p><h2 id="allocation-title">Orders by component</h2></div>
+        <label class="select-label" for="quarter">Order quarter <select id="quarter"><option value="1">Q1</option><option value="2">Q2</option><option value="3">Q3</option><option value="4">Q4</option></select></label>
+      </div>
+      <div class="quarter-cards" id="quarter-summary" aria-label="Quarterly spending"></div>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Component order allocations">
+        <table id="allocation-table"><thead><tr><th scope="col">Component</th><th scope="col">Sourcing action</th><th scope="col" id="quarter-column">Q1 orders</th><th scope="col">Expected annual difference</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section class="surface section wide" id="trade-evidence" aria-labelledby="trade-title">
+      <div class="section-heading"><div><p class="eyebrow">Source data</p><h2 id="trade-title">U.S. tariff and import evidence</h2></div><label class="select-label" for="trade-family">Product family <select id="trade-family" disabled></select></label></div>
+      <div class="subheading"><h3>USITC tariff schedule</h3><label class="select-label" for="hts-release">Schedule <select id="hts-release" disabled></select></label></div>
+      <p id="evidence-status" role="status">Loading the archived USITC tariff schedule.</p>
+      <div id="evidence-table"></div>
+      <h3>U.S. imports by origin</h3>
+      <p id="imports-status" role="status">Loading the UN Comtrade import snapshot.</p>
+      <div class="imports-trend" id="imports-trend"></div>
+      <div id="imports-table"></div>
+    </section>
+
+    <section class="surface section wide methods" aria-labelledby="methods-title">
+      <h2 id="methods-title">Model and validation</h2>
+      <p>The engine evaluates <strong id="policy-count">—</strong> candidate policies over six shared scenarios and selects one policy per component using dynamic programming. Its objective blends expected cost with the conditional cost of the adverse scenarios. The 95% tail cost is reported for the finished portfolio.</p>
+      <p>Company volumes, supplier terms, duty assumptions, and scenario probabilities are synthetic. The USITC records document tariff classifications and published schedule text. They do not set a buyer's effective duty.</p>
+      <p>Both baselines use the same capacity, budget, and recourse rules. The cheapest static plan chooses against unchanged assumed tariffs and normal demand, then gets scored under the same six scenarios as the recommended plan.</p>
+    </section>
+  </main>
+  <script type="module" src="./app.mjs?v=1"></script>
+</body>
+</html>
